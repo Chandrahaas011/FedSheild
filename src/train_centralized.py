@@ -1,6 +1,7 @@
 """Centralized training baseline — the upper-bound comparison point for every FL config
 (ROADMAP.md Phase 3, step 1)."""
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -17,7 +18,7 @@ def train_centralized(
     X_train, y_train, X_val, y_val, X_test, y_test,
     model_name: str, n_features: int, n_classes: int, class_names: list[str],
     epochs: int, lr: float, batch_size: int, seed: int = 42,
-    checkpoint_path=None, patience: int = 5,
+    checkpoint_path=None, patience: int = 5, reset: bool = False,
 ):
     set_seed(seed)
     model = build_model(model_name, n_features, n_classes)
@@ -30,6 +31,8 @@ def train_centralized(
     )
 
     start_epoch, best_val_f1, epochs_no_improve, best_state = 0, -1.0, 0, None
+    if checkpoint_path is not None and reset:
+        Path(checkpoint_path).unlink(missing_ok=True)
     if checkpoint_path is not None:
         ckpt = load_checkpoint(checkpoint_path)
         if ckpt is not None:

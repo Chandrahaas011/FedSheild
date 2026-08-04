@@ -7,6 +7,7 @@ skill's validator (all six checks pass for light mode) — fixed hue order, neve
 Centralized=blue, FedAvg=orange, Your-method=green, Your-method+DP=vermillion.
 """
 import json
+import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -14,6 +15,7 @@ import numpy as np
 
 RUNS_DIR = Path("results/runs")
 SHAP_DIR = Path("results/shap")
+LOCAL_DEBUG_DIR = Path("results/shap_local_debug")
 OUT_DIR = Path("results/figures")
 SEEDS = [0, 1, 2]
 
@@ -104,8 +106,8 @@ def figure2_communication_savings():
         ax.fill_between(rounds, means_mb - stds_mb, means_mb + stds_mb, color=color, alpha=0.15, linewidth=0, zorder=2)
 
     ax.set_xlabel("Communication round")
-    ax.set_ylabel("Cumulative bytes transmitted (MB)")
-    ax.set_title("Communication cost: your-method vs. FedAvg")
+    ax.set_ylabel("Cumulative client-upload payload (MB)")
+    ax.set_title("Client-upload payload: top-k vs. FedAvg")
     _style_axes(ax)
     ax.legend(frameon=False, fontsize=9, loc="upper left")
     fig.tight_layout()
@@ -148,7 +150,7 @@ def figure3_shap_global_summary(shap_run_id: str, top_n: int = 10):
 
 
 def figure4_local_explanations(shap_run_id: str, n_examples: int = 3, top_n: int = 8):
-    path = SHAP_DIR / f"{shap_run_id}.json"
+    path = LOCAL_DEBUG_DIR / f"{shap_run_id}.json"
     if not path.exists():
         print(f"skip figure4: {path} not found")
         return
@@ -183,13 +185,17 @@ def figure4_local_explanations(shap_run_id: str, n_examples: int = 3, top_n: int
         ax.set_xlabel("SHAP value")
         ax.set_title(f"Alert: {ex['class']}", fontsize=10)
         _style_axes(ax)
-    fig.suptitle("Per-alert local explanations (client-side, individual flagged flows)")
+    fig.suptitle("Per-alert explanations (controlled local-debug export)")
     fig.tight_layout()
     fig.savefig(OUT_DIR / "figure4_local_explanations.png", dpi=150)
     plt.close(fig)
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--include-local-debug", action="store_true",
+                        help="Render only from an explicitly exported local-debug artifact.")
+    args = parser.parse_args()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     figure1_convergence()
     figure2_communication_savings()
@@ -197,7 +203,8 @@ def main():
     # stronger demonstration of the federated-XAI architecture itself (ROADMAP.md Phase 4
     # gate). The flagship's own SHAP results are in results/shap/topk_dp_*.json.
     figure3_shap_global_summary("topk_alpha0.5_seed0")
-    figure4_local_explanations("topk_alpha0.5_seed0")
+    if args.include_local_debug:
+        figure4_local_explanations("topk_alpha0.5_seed0")
     print("Figures written to results/figures/")
 
 

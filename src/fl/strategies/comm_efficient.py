@@ -18,7 +18,7 @@ from flwr.common import (
 from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy import FedAvg
 
-from src.fl.param_utils import dense_bytes, flatten, unflatten
+from src.fl.param_utils import bidirectional_array_payload_bytes, dense_bytes, flatten, unflatten
 
 
 class CommEfficientFedAvg(FedAvg):
@@ -28,6 +28,10 @@ class CommEfficientFedAvg(FedAvg):
         self.sizes = sizes
         self.global_flat = flat
         self.topk_ratio = topk_ratio
+        # Every selected client receives the current dense global model before it can
+        # train.  Keep this separate from client-upload bytes: sparsification only
+        # changes the latter in this protocol.
+        self.dense_global_bytes = dense_bytes(initial_ndarrays)
         self.round_bytes: dict[int, int] = {}
         self.cumulative_bytes = 0
         kwargs["initial_parameters"] = ndarrays_to_parameters(initial_ndarrays)
@@ -63,9 +67,19 @@ class CommEfficientFedAvg(FedAvg):
         self.cumulative_bytes += total_bytes
 
         new_ndarrays = unflatten(new_flat, self.model_shapes, self.sizes)
+        n_selected_clients = len(results)
+        server_downlink_bytes, total_array_payload_bytes = bidirectional_array_payload_bytes(
+            total_bytes, self.dense_global_bytes, n_selected_clients
+        )
         metrics_agg: dict[str, Scalar] = {
+            # Legacy aliases retained so pre-existing result JSONs remain readable.
+            # They always mean client-to-server numeric-array payload, not total
+            # bidirectional network traffic.
             "bytes_this_round": total_bytes,
             "cumulative_bytes": self.cumulative_bytes,
+            "client_upload_bytes": total_bytes,
+            "server_downlink_bytes": server_downlink_bytes,
+            "total_array_payload_bytes": total_array_payload_bytes,
         }
         eps_vals = [fit_res.metrics["dp_epsilon"] for _, fit_res in results if "dp_epsilon" in fit_res.metrics]
         if eps_vals:

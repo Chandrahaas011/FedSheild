@@ -20,9 +20,13 @@ from src.xai.alignment import alignment_table
 from src.xai.federated_shap import run_federated_shap
 
 RESULTS_DIR = Path("results/shap")
+LOCAL_DEBUG_DIR = Path("results/shap_local_debug")
 
 
-def run(run_id: str, n_clients: int | None = None, alpha=None, seed: int = 0):
+def run(
+    run_id: str, n_clients: int | None = None, alpha=None, seed: int | None = None,
+    export_local_examples: bool = False,
+):
     with open(Path("results/run_configs") / f"{run_id}.yaml") as f:
         config = yaml.safe_load(f)
 
@@ -35,11 +39,13 @@ def run(run_id: str, n_clients: int | None = None, alpha=None, seed: int = 0):
 
     n_clients = n_clients or config.get("n_clients", 10)
     alpha = alpha if alpha is not None else config.get("alpha", 0.5)
+    seed = config.get("seed", 0) if seed is None else seed
     client_indices = partition_data(y_test, n_clients, alpha, seed=seed)
     client_indices = [np.asarray(idx) for idx in client_indices]
 
     global_summary, local_examples = run_federated_shap(
-        model, X_test, client_indices, feature_names, class_names, benign_idx=0, seed=seed
+        model, X_test, client_indices, feature_names, class_names, benign_idx=0, seed=seed,
+        collect_local_examples=export_local_examples,
     )
     alignment = alignment_table(global_summary, feature_names, ATTACK_SIGNATURE_FEATURES)
 
@@ -47,13 +53,20 @@ def run(run_id: str, n_clients: int | None = None, alpha=None, seed: int = 0):
     out = {
         "run_id": run_id,
         "global_summary": global_summary,
-        "local_examples": local_examples[:30],
         "alignment": alignment,
         "feature_names": feature_names,
         "class_names": class_names,
     }
     with open(RESULTS_DIR / f"{run_id}.json", "w") as f:
         json.dump(out, f, indent=2)
+    if export_local_examples:
+        # This is intentionally outside the normal server-facing result directory.
+        # In a real deployment the caller must execute this export inside the client
+        # security boundary and must not transmit the output to the coordinator.
+        LOCAL_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOCAL_DEBUG_DIR / f"{run_id}.json", "w") as f:
+            json.dump({"run_id": run_id, "local_examples": local_examples[:30],
+                       "feature_names": feature_names}, f, indent=2)
     return out
 
 
@@ -62,10 +75,13 @@ def main():
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--n-clients", type=int, default=None)
     parser.add_argument("--alpha", default=None)
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--export-local-examples", action="store_true",
+                        help="Write sensitive per-alert examples to the local debug directory.")
     args = parser.parse_args()
-    out = run(args.run_id, n_clients=args.n_clients, alpha=args.alpha, seed=args.seed)
-    print(f"Explained {len(out['global_summary'])} attack classes, {len(out['local_examples'])} local examples cached.")
+    out = run(args.run_id, n_clients=args.n_clients, alpha=args.alpha, seed=args.seed,
+              export_local_examples=args.export_local_examples)
+    print(f"Explained {len(out['global_summary'])} attack classes; server output contains summaries only.")
     for row in out["alignment"]:
         print(row["attack_class"], "overlap:", row["overlap_count"], "/", len(row["known_signature_features"]))
 

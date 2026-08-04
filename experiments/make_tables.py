@@ -55,7 +55,7 @@ def table1() -> pd.DataFrame:
     rows = []
     for method in ["centralized", "fedavg", "topk", "topk_dp"]:
         metric_dicts = []
-        bytes_per_round_vals, converge_round_vals = [], []
+        upload_per_round_vals, total_payload_per_round_vals, converge_round_vals = [], [], []
         for seed in SEEDS:
             run_id = f"{method}_seed{seed}" if method == "centralized" else f"{method}_alpha0.5_seed{seed}"
             run = load_run(run_id)
@@ -64,9 +64,12 @@ def table1() -> pd.DataFrame:
             metric_dicts.append(run["final_metrics"])
             if run["history"] is not None:
                 history = run["history"]
-                bytes_vals = [b for b in history["bytes_this_round"] if b is not None]
+                bytes_vals = [b for b in history.get("client_upload_bytes", history["bytes_this_round"]) if b is not None]
                 if bytes_vals:
-                    bytes_per_round_vals.append(np.mean(bytes_vals))
+                    upload_per_round_vals.append(np.mean(bytes_vals))
+                total_payload_vals = [b for b in history.get("total_array_payload_bytes", []) if b is not None]
+                if total_payload_vals:
+                    total_payload_per_round_vals.append(np.mean(total_payload_vals))
                 rtc = rounds_to_converge(history)
                 if rtc is not None:
                     converge_round_vals.append(rtc)
@@ -82,7 +85,13 @@ def table1() -> pd.DataFrame:
             "macro_f1_std": np.std([m["macro_f1"] for m in metric_dicts]),
             "macro_precision_mean": np.mean([m["macro_precision"] for m in metric_dicts]),
             "overall_fpr_mean": np.mean([m["overall_fpr"] for m in metric_dicts]),
-            "bytes_per_round_mean": np.mean(bytes_per_round_vals) if bytes_per_round_vals else None,
+            # "bytes_per_round_mean" is retained for legacy readers and means upload
+            # only.  New manuscripts should use the explicit columns below.
+            "bytes_per_round_mean": np.mean(upload_per_round_vals) if upload_per_round_vals else None,
+            "client_upload_bytes_per_round_mean": np.mean(upload_per_round_vals) if upload_per_round_vals else None,
+            "total_array_payload_bytes_per_round_mean": (
+                np.mean(total_payload_per_round_vals) if total_payload_per_round_vals else None
+            ),
             "rounds_to_converge_mean": np.mean(converge_round_vals) if converge_round_vals else None,
             "n_seeds": len(metric_dicts),
         }

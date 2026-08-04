@@ -27,3 +27,16 @@ def unflatten(flat: np.ndarray, shapes: list[tuple], sizes: list[int]) -> list[n
 
 def dense_bytes(ndarrays: list[np.ndarray]) -> int:
     return int(sum(a.nbytes for a in ndarrays))
+
+
+def bidirectional_array_payload_bytes(
+    client_upload_bytes: int, dense_global_bytes: int, n_selected_clients: int,
+) -> tuple[int, int]:
+    """Return (server_downlink, total) for one synchronous FL round.
+
+    The server broadcasts the dense global parameters to each selected client.  This
+    intentionally counts only ndarray payload bytes, not framework serialization or
+    transport headers; callers must label the metric accordingly.
+    """
+    server_downlink_bytes = int(dense_global_bytes) * int(n_selected_clients)
+    return server_downlink_bytes, int(client_upload_bytes) + server_downlink_bytes

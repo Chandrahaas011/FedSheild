@@ -7,15 +7,18 @@ Built in from day one per ROADMAP.md Phase 3 (free-tier GPU sessions die mid-run
 just makes long local CPU runs safe to interrupt.
 """
 import json
+import shutil
 from pathlib import Path
 
 import flwr as fl
 import numpy as np
 import torch
+from flwr.common import Context
 
 from src.fl.client import FlowerNIDSClient
+from src.fl.client import RESIDUAL_DIR
 from src.fl.dataset import client_loaders
-from src.fl.dp import make_dp_compatible
+from src.fl.dp import ACCOUNTANT_DIR, make_dp_compatible
 from src.fl.param_utils import unflatten
 from src.fl.strategies.comm_efficient import CommEfficientFedAvg
 from src.metrics import compute_metrics
@@ -42,10 +45,16 @@ def run_federated(
     n_rounds: int, fraction_fit: float, local_epochs: int, lr: float, batch_size: int,
     topk_ratio: float, dp: bool, dp_noise_multiplier: float, dp_max_grad_norm: float,
     rounds_per_checkpoint: int = 5, checkpoint_dir: Path = None, seed: int = 42,
-    num_cpus_per_client: float = 1.0,
+    num_cpus_per_client: float = 1.0, reset: bool = False,
 ):
     n_clients = len(client_indices)
     checkpoint_dir = checkpoint_dir or Path("checkpoints") / run_id
+    if reset:
+        # A forced run must not silently reuse a completed model, top-k residual, or
+        # DP accountant from an earlier execution with the same run id.
+        for path in (checkpoint_dir, RESIDUAL_DIR / run_id, ACCOUNTANT_DIR / run_id):
+            if path.exists():
+                shutil.rmtree(path)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     paths = _checkpoint_paths(checkpoint_dir)
 
@@ -54,7 +63,8 @@ def run_federated(
 
     start_round, history = 0, {"rounds": [], "server_test_macro_f1": [], "server_test_accuracy": [],
                                 "distributed_macro_f1": [], "bytes_this_round": [], "cumulative_bytes": [],
-                                "dp_epsilon_max": []}
+                                "client_upload_bytes": [], "server_downlink_bytes": [],
+                                "total_array_payload_bytes": [], "dp_epsilon_max": []}
     if paths["state"].exists():
         with open(paths["state"]) as f:
             saved = json.load(f)
@@ -62,12 +72,18 @@ def run_federated(
         history = saved["history"]
         loaded = np.load(paths["params"])
         initial_ndarrays = [loaded[f"arr_{i}"] for i in range(len(loaded.files))]
+        # Checkpoints written before bidirectional payload accounting do not have
+        # these series.  Preserve backward-compatible resume behavior.
+        for key in ("client_upload_bytes", "server_downlink_bytes", "total_array_payload_bytes"):
+            history.setdefault(key, [None] * len(history["rounds"]))
 
     if start_round >= n_rounds:
         return history
 
-    def client_fn(cid: str):
-        client_id = int(cid)
+    def client_fn(context: Context):
+        # Flower 1.13+ supplies the simulator partition through Context.  Using the
+        # documented key keeps this legacy simulation path forward-compatible.
+        client_id = int(context.node_config.get("partition-id", context.node_id))
         train_loader, val_loader, n_train = client_loaders(
             X_train, y_train, client_indices, client_id, batch_size, seed=seed
         )
@@ -128,6 +144,9 @@ def run_federated(
         fit_metrics = fl_history.metrics_distributed_fit
         bytes_by_round = dict(fit_metrics.get("bytes_this_round", []))
         cum_by_round = dict(fit_metrics.get("cumulative_bytes", []))
+        upload_by_round = dict(fit_metrics.get("client_upload_bytes", []))
+        downlink_by_round = dict(fit_metrics.get("server_downlink_bytes", []))
+        total_payload_by_round = dict(fit_metrics.get("total_array_payload_bytes", []))
         eps_by_round = dict(fit_metrics.get("dp_epsilon_max", []))
         dist_f1_by_round = dict(fl_history.metrics_distributed.get("macro_f1", []))
 
@@ -144,6 +163,9 @@ def run_federated(
             history["server_test_macro_f1"].append(centralized_f1.get(rnd))
             history["server_test_accuracy"].append(centralized_acc.get(rnd))
             history["bytes_this_round"].append(bytes_by_round.get(rnd))
+            history["client_upload_bytes"].append(upload_by_round.get(rnd, bytes_by_round.get(rnd)))
+            history["server_downlink_bytes"].append(downlink_by_round.get(rnd))
+            history["total_array_payload_bytes"].append(total_payload_by_round.get(rnd))
             cum_this_round = cum_by_round.get(rnd)
             history["cumulative_bytes"].append(prior_cumulative + cum_this_round if cum_this_round is not None else None)
             history["dp_epsilon_max"].append(eps_by_round.get(rnd))

@@ -15,7 +15,7 @@ import torch
 def explain_client(
     model: torch.nn.Module, X_client: np.ndarray, feature_names: list[str], class_names: list[str],
     benign_idx: int = 0, background_size: int = 50, max_explain_per_class: int = 100,
-    max_local_examples_per_class: int = 3, seed: int = 42,
+    max_local_examples_per_class: int = 3, seed: int = 42, collect_local_examples: bool = False,
 ) -> dict:
     """Runs SHAP on one client's local data against the (already-trained, converged)
     global model. Returns a dict with a per-class mean(|SHAP|) summary (safe to send to
@@ -63,13 +63,17 @@ def explain_client(
             "mean_abs_shap": np.abs(vals).mean(axis=0).tolist(),
             "n_samples": n_c,
         }
-        example_positions = np.where(mask)[0][:max_local_examples_per_class]
-        for pos in example_positions:
-            local_examples.append({
-                "class": class_names[c],
-                "feature_values": X_explain[pos].numpy().tolist(),
-                "shap_values": shap_by_class[pos, :, c].tolist(),
-            })
+        # Per-alert explanations are sensitive artifacts.  They are deliberately
+        # excluded from the normal federated return path; a client may opt into a
+        # separate local-debug export for a controlled demonstration.
+        if collect_local_examples:
+            example_positions = np.where(mask)[0][:max_local_examples_per_class]
+            for pos in example_positions:
+                local_examples.append({
+                    "class": class_names[c],
+                    "feature_values": X_explain[pos].numpy().tolist(),
+                    "shap_values": shap_by_class[pos, :, c].tolist(),
+                })
 
     return {"summary": summary, "local_examples": local_examples}
 
@@ -111,6 +115,7 @@ def aggregate_client_summaries(client_summaries: list[dict], feature_names: list
 def run_federated_shap(
     model: torch.nn.Module, X: np.ndarray, client_indices: list[np.ndarray],
     feature_names: list[str], class_names: list[str], benign_idx: int = 0, seed: int = 42,
+    collect_local_examples: bool = False,
 ) -> tuple[dict, list[dict]]:
     client_summaries = []
     all_local_examples = []
@@ -118,10 +123,12 @@ def run_federated_shap(
         if len(idx) < 2:
             continue
         result = explain_client(
-            model, X[idx], feature_names, class_names, benign_idx=benign_idx, seed=seed + client_id
+            model, X[idx], feature_names, class_names, benign_idx=benign_idx, seed=seed + client_id,
+            collect_local_examples=collect_local_examples,
         )
         client_summaries.append(result)
-        all_local_examples.extend(result["local_examples"])
+        if collect_local_examples:
+            all_local_examples.extend(result["local_examples"])
 
     global_summary = aggregate_client_summaries(client_summaries, feature_names, class_names)
     return global_summary, all_local_examples

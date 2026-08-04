@@ -1,6 +1,6 @@
 import numpy as np
 
-from src.fl.param_utils import dense_bytes, flatten, get_shapes, unflatten
+from src.fl.param_utils import bidirectional_array_payload_bytes, dense_bytes, flatten, get_shapes, unflatten
 
 
 def test_flatten_unflatten_roundtrip():
@@ -17,3 +17,11 @@ def test_flatten_unflatten_roundtrip():
 def test_dense_bytes_matches_nbytes_sum():
     arrays = [np.zeros((5, 5), dtype=np.float32), np.zeros(10, dtype=np.float32)]
     assert dense_bytes(arrays) == arrays[0].nbytes + arrays[1].nbytes
+
+
+def test_bidirectional_payload_includes_dense_server_broadcasts():
+    downlink, total = bidirectional_array_payload_bytes(
+        client_upload_bytes=236_640, dense_global_bytes=78_900, n_selected_clients=10
+    )
+    assert downlink == 789_000
+    assert total == 1_025_640

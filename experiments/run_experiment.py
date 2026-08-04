@@ -66,6 +66,7 @@ def run_single(config: dict, force: bool = False) -> dict:
                 batch_size=config["batch_size"], seed=config["seed"],
                 checkpoint_path=Path("checkpoints") / run_id / "centralized.pt",
                 patience=config.get("patience", 5),
+                reset=force,
             )
             result = {"run_id": run_id, "config": config, "final_metrics": test_metrics, "history": None}
             log_round_metrics(test_metrics, step=test_metrics.get("epochs_run", 0))
@@ -85,6 +86,7 @@ def run_single(config: dict, force: bool = False) -> dict:
                 dp=dp, dp_noise_multiplier=config.get("dp_noise_multiplier", 1.0),
                 dp_max_grad_norm=config.get("dp_max_grad_norm", 1.0),
                 rounds_per_checkpoint=config.get("rounds_per_checkpoint", 5), seed=config["seed"],
+                reset=force,
             )
             # history only tracks macro_f1/accuracy per round (cheap to compute every
             # round); the full per-class recall/FPR/precision breakdown Table 1 needs is
@@ -94,6 +96,12 @@ def run_single(config: dict, force: bool = False) -> dict:
                 test_preds = final_model(torch.from_numpy(X_test)).argmax(dim=1).numpy()
             final_metrics = compute_metrics(y_test, test_preds, class_names)
             final_metrics["cumulative_bytes"] = history["cumulative_bytes"][-1] if history["cumulative_bytes"] else None
+            final_metrics["cumulative_client_upload_bytes"] = sum(
+                b for b in history.get("client_upload_bytes", []) if b is not None
+            )
+            final_metrics["cumulative_total_array_payload_bytes"] = sum(
+                b for b in history.get("total_array_payload_bytes", []) if b is not None
+            )
             final_metrics["dp_epsilon_max"] = next((e for e in reversed(history["dp_epsilon_max"]) if e is not None), None)
             result = {"run_id": run_id, "config": config, "final_metrics": final_metrics, "history": history}
             for i, rnd in enumerate(history["rounds"]):
