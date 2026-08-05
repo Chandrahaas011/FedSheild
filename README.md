@@ -1,33 +1,45 @@
-# FedShield: Reproducible Federated IDS Evaluation
+# FedShield: Residual-Adaptive Private Federated Intrusion Detection
 
-FedShield is a research prototype for evaluating federated learning (FL) for network
-intrusion detection on corrected CICIDS2017 data. It compares dense FedAvg, top-*k*
-update sparsification, and client-side DP-SGD under IID and Dirichlet non-IID partitions.
-It also produces server-aggregated SHAP feature-importance summaries.
+FedShield is a major-project system for training a network intrusion detector across
+heterogeneous data owners without centralizing their raw traffic. Its proposed method,
+**Residual-Adaptive Top-*k* (RA-TopK)**, changes each client's communication budget from
+round to round: it transmits the smallest bounded set of residual-corrected update
+coordinates that retains a target fraction of update energy. The system can combine this
+method with record-level DP-SGD and privacy-accounting, then reports utility, privacy,
+and bidirectional numeric-array payload together.
 
-This repository supports a **pilot study**, not a production intrusion-detection system.
-The current evidence is one dataset, 30% of its training split, 20 FL rounds, and three
-seeds per reported configuration.
+**Paper title:** *FedShield: Residual-Adaptive Compression for Differentially Private
+Federated Intrusion Detection Under Non-IID Traffic.*
 
-## Research claims and boundaries
+## What is novel here
 
-- **Communication:** top-*k* reduced the measured **client-upload numeric-array payload**
-  from 789,000 to 236,640 bytes/round in the legacy pilot (70%). This is not a 70%
-  reduction in end-to-end network traffic: every selected client still receives a dense
-  global model. New runs record upload, dense server downlink, and their combined
-  numeric-array payload separately; framework serialization and transport headers are
-  not measured.
-- **Privacy:** DP-SGD is implemented with Opacus and an RDP accountant persisted per
-  client across rounds. Reported epsilon is a record-level value at delta=1e-5 under the
-  accountant's sampling and public-participation assumptions. FL alone, sparse updates,
-  and this simulator do not provide deployment-wide confidentiality or client-level DP.
-- **XAI:** the standard XAI artifact contains only per-class mean absolute SHAP summaries.
-  Per-alert feature values and SHAP vectors are disabled by default and require the
-  explicit local-debug export. The current XAI workflow is a simulation harness, not a
-  distributed production client deployment.
-- **Results:** macro-F1 and rare-class recall are primary. Accuracy is secondary because
-  benign flows dominate CICIDS2017. Three seeds support descriptive mean±standard
-  deviation, not claims of statistical equivalence.
+Fixed top-*k* sparsification sends the same fraction of every client update, even when
+one client's update is concentrated and another's is diffuse. RA-TopK uses error
+feedback and selects the minimum number of largest-magnitude coordinates that reaches a
+configured L2-energy target, constrained by a minimum and maximum ratio. This makes the
+upload budget responsive to each client's training signal while bounding communication
+cost. The research question is whether this adaptive budget preserves IDS utility under
+non-IID traffic better than a fixed budget at comparable payload.
+
+This is a real implemented method, not a claim that an untested method has already won.
+`configs/ra_topk_dp.yaml` is the flagship configuration. The existing legacy pilot
+results are baselines only; RA-TopK must be evaluated through the prescribed matrix
+before any result or novelty-performance claim is submitted.
+
+## System scope and honest boundaries
+
+- **Data and federation:** corrected CICIDS2017, simulated Flower clients, IID or
+  Dirichlet non-IID partitions. Raw traffic is not sent to the server in this simulator.
+- **Privacy:** DP-SGD uses Opacus with per-client RDP accounting. Epsilon is record-level
+  at delta=1e-5 under the accounting assumptions. Federated learning, sparsity, and this
+  simulator alone do not provide client-level DP, secure aggregation, or deployment-wide
+  confidentiality.
+- **Communication:** each round records client upload, dense server downlink, and their
+  combined numeric-array payload. It excludes framework serialization, headers, retries,
+  and real network overhead. Sparse uploads do not make the dense broadcast sparse.
+- **Explainability:** the normal artifact contains only per-class, mean-absolute SHAP
+  summaries. Per-alert values require `--export-local-examples` and remain local debug
+  material, not a server-facing feature.
 
 ## Quick start
 
@@ -35,41 +47,31 @@ seeds per reported configuration.
 ./.venv/Scripts/python.exe -m pip install -r requirements.txt
 ./.venv/Scripts/python.exe -m pytest tests -q
 
-# Raw corrected CICIDS2017 CSVs must be available under data/raw/cicids2017_corrected/
+# Put corrected CICIDS2017 CSVs under data/raw/cicids2017_corrected/ first.
 ./.venv/Scripts/python.exe -m src.data.preprocess
 
-# Fresh smoke run: --force removes its matching checkpoint/residual/accountant state.
+# Functional check; --force clears only the matching run's checkpoint, residual, and DP state.
 ./.venv/Scripts/python.exe -m experiments.run_experiment --config configs/smoke.yaml --force
 
-# Rebuild pilot artifacts from existing result JSON files.
-./.venv/Scripts/python.exe -m experiments.make_tables
-./.venv/Scripts/python.exe -m experiments.make_figures
-
-# Server-facing federated-XAI summary artifact only.
-./.venv/Scripts/python.exe -m experiments.run_xai --run-id topk_alpha0.5_seed0
+# Flagship RA-TopK + DP run.
+./.venv/Scripts/python.exe -m experiments.run_experiment --config configs/ra_topk_dp.yaml --force
 ```
 
-`--export-local-examples` is a controlled demonstration option. It writes sensitive
-per-alert records to `results/shap_local_debug/`; do not use it in a server-facing run.
+The flagship parameters are `adaptive_min_ratio`, `adaptive_max_ratio`, and
+`adaptive_energy_target`. A client chooses the least number of coordinates needed to
+retain the target energy, then clips that number to the two ratios. Residual coordinates
+not sent this round are carried forward through error feedback.
 
-## Reproducibility
+## Submission standard
 
-Each run is defined by YAML configuration and writes a JSON result plus checkpoint.
-`--force` intentionally starts again from clean run-specific state. Resuming without
-`--force` uses the checkpoint. The project records deterministic Python, NumPy, and
-PyTorch seeds, but experiments should still be rerun and compared before publication.
+Before presenting RA-TopK as publishable evidence, run at least five seeds, full data,
+100+ rounds or convergence, IID plus alpha = 1.0/0.5/0.1, a second public dataset, and
+the baselines Centralized, FedAvg, FedProx, fixed top-*k*, fixed top-*k* + DP, RA-TopK,
+and RA-TopK + DP. Lead with macro-F1, minority-class recall, false-positive rate,
+calibration, epsilon, and both payload measures; use confidence intervals and a
+predeclared paired test.
 
-## What remains before submission
-
-1. Run the prespecified full experiment matrix with at least five seeds, 100% training
-   data, 100+ rounds, and a second dataset such as UNSW-NB15 or ToN-IoT.
-2. Add recent FL-IDS baselines (at minimum FedProx) and report confidence intervals or
-   paired statistical tests.
-3. Evaluate explanation faithfulness, stability across seeds/clients, runtime, and a
-   random-feature null baseline; top-feature overlap alone is insufficient validation.
-4. Treat secure aggregation, adversarial robustness, deployment networking costs, and
-   client-level privacy as future work unless they are actually implemented and tested.
-
-See [research_paper.md](research_paper.md) for the IEEE-style manuscript draft,
-[literarysurvey-template.md](literarysurvey-template.md) for the recent literature survey,
-and [ROADMAP.md](ROADMAP.md) for the zero-budget submission plan.
+See [research_paper.md](research_paper.md) for the IEEE-style manuscript,
+[literarysurvey-template.md](literarysurvey-template.md) for the recent-literature gap,
+[implementation_guide.md](implementation_guide.md) for reproducibility, and
+[PRESENTATION_QA.md](PRESENTATION_QA.md) for a viva drill.

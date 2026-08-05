@@ -44,6 +44,8 @@ def run_federated(
     model_name: str, n_features: int, n_classes: int, class_names: list[str],
     n_rounds: int, fraction_fit: float, local_epochs: int, lr: float, batch_size: int,
     topk_ratio: float, dp: bool, dp_noise_multiplier: float, dp_max_grad_norm: float,
+    adaptive_topk: bool = False, adaptive_min_ratio: float = 0.02,
+    adaptive_max_ratio: float = 0.20, adaptive_energy_target: float = 0.90,
     rounds_per_checkpoint: int = 5, checkpoint_dir: Path = None, seed: int = 42,
     num_cpus_per_client: float = 1.0, reset: bool = False,
 ):
@@ -64,7 +66,8 @@ def run_federated(
     start_round, history = 0, {"rounds": [], "server_test_macro_f1": [], "server_test_accuracy": [],
                                 "distributed_macro_f1": [], "bytes_this_round": [], "cumulative_bytes": [],
                                 "client_upload_bytes": [], "server_downlink_bytes": [],
-                                "total_array_payload_bytes": [], "dp_epsilon_max": []}
+                                "total_array_payload_bytes": [], "dp_epsilon_max": [],
+                                "selected_sparsity_ratio_mean": []}
     if paths["state"].exists():
         with open(paths["state"]) as f:
             saved = json.load(f)
@@ -74,7 +77,8 @@ def run_federated(
         initial_ndarrays = [loaded[f"arr_{i}"] for i in range(len(loaded.files))]
         # Checkpoints written before bidirectional payload accounting do not have
         # these series.  Preserve backward-compatible resume behavior.
-        for key in ("client_upload_bytes", "server_downlink_bytes", "total_array_payload_bytes"):
+        for key in ("client_upload_bytes", "server_downlink_bytes", "total_array_payload_bytes",
+                    "selected_sparsity_ratio_mean"):
             history.setdefault(key, [None] * len(history["rounds"]))
 
     if start_round >= n_rounds:
@@ -94,6 +98,8 @@ def run_federated(
     def fit_config_fn(server_round: int):
         return {
             "lr": lr, "local_epochs": local_epochs, "topk_ratio": topk_ratio,
+            "adaptive_topk": adaptive_topk, "adaptive_min_ratio": adaptive_min_ratio,
+            "adaptive_max_ratio": adaptive_max_ratio, "adaptive_energy_target": adaptive_energy_target,
             "dp": dp, "dp_noise_multiplier": dp_noise_multiplier, "dp_max_grad_norm": dp_max_grad_norm,
             "run_id": run_id, "server_round": start_round + server_round,
         }
@@ -117,6 +123,7 @@ def run_federated(
         strategy = CommEfficientFedAvg(
             initial_ndarrays=initial_ndarrays,
             topk_ratio=topk_ratio,
+            sparse_updates=adaptive_topk or topk_ratio > 0,
             fraction_fit=fraction_fit,
             fraction_evaluate=fraction_fit,
             min_fit_clients=max(1, int(n_clients * fraction_fit)),
@@ -148,6 +155,7 @@ def run_federated(
         downlink_by_round = dict(fit_metrics.get("server_downlink_bytes", []))
         total_payload_by_round = dict(fit_metrics.get("total_array_payload_bytes", []))
         eps_by_round = dict(fit_metrics.get("dp_epsilon_max", []))
+        selected_ratio_by_round = dict(fit_metrics.get("selected_sparsity_ratio_mean", []))
         dist_f1_by_round = dict(fl_history.metrics_distributed.get("macro_f1", []))
 
         # The strategy's cumulative_bytes counter is relative to this chunk (a fresh
@@ -169,6 +177,7 @@ def run_federated(
             cum_this_round = cum_by_round.get(rnd)
             history["cumulative_bytes"].append(prior_cumulative + cum_this_round if cum_this_round is not None else None)
             history["dp_epsilon_max"].append(eps_by_round.get(rnd))
+            history["selected_sparsity_ratio_mean"].append(selected_ratio_by_round.get(rnd))
             history["distributed_macro_f1"].append(dist_f1_by_round.get(rnd))
 
         initial_ndarrays = unflatten(strategy.global_flat, strategy.model_shapes, strategy.sizes)

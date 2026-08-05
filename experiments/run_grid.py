@@ -30,7 +30,7 @@ def build_grid() -> list[dict]:
     grid = []
 
     # --- Table 1: method comparison at the default non-IID setting (alpha=0.5) ---
-    for method_name in ["centralized", "fedavg", "topk", "topk_dp"]:
+    for method_name in ["centralized", "fedavg", "topk", "ra_topk", "topk_dp", "ra_topk_dp"]:
         base = load_config(method_name)
         for seed in SEEDS:
             cfg = copy.deepcopy(base)
@@ -38,7 +38,7 @@ def build_grid() -> list[dict]:
             grid.append(cfg)
 
     # --- Table 2: non-IID robustness sweep, FedAvg vs your-method ---
-    for method_name in ["fedavg", "topk"]:
+    for method_name in ["fedavg", "topk", "ra_topk"]:
         base = load_config(method_name)
         for alpha in ALPHAS_FOR_TABLE2:
             for seed in SEEDS:

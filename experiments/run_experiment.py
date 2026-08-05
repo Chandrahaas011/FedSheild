@@ -74,8 +74,9 @@ def run_single(config: dict, force: bool = False) -> dict:
             client_indices = partition_data(y_train, config["n_clients"], config["alpha"], seed=config["seed"])
             client_indices = [np.asarray(idx) for idx in client_indices]
 
-            topk_ratio = config["topk_ratio"] if config["method"] in ("topk", "topk_dp") else -1
-            dp = config.get("dp", False) or config["method"] == "topk_dp"
+            adaptive_topk = config["method"] in ("ra_topk", "ra_topk_dp")
+            topk_ratio = config.get("topk_ratio", -1) if config["method"] in ("topk", "topk_dp") else -1
+            dp = config.get("dp", False) or config["method"] in ("topk_dp", "ra_topk_dp")
 
             history = run_federated(
                 run_id=run_id, X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test,
@@ -85,6 +86,10 @@ def run_single(config: dict, force: bool = False) -> dict:
                 lr=config["lr"], batch_size=config["batch_size"], topk_ratio=topk_ratio,
                 dp=dp, dp_noise_multiplier=config.get("dp_noise_multiplier", 1.0),
                 dp_max_grad_norm=config.get("dp_max_grad_norm", 1.0),
+                adaptive_topk=adaptive_topk,
+                adaptive_min_ratio=config.get("adaptive_min_ratio", 0.02),
+                adaptive_max_ratio=config.get("adaptive_max_ratio", 0.20),
+                adaptive_energy_target=config.get("adaptive_energy_target", 0.90),
                 rounds_per_checkpoint=config.get("rounds_per_checkpoint", 5), seed=config["seed"],
                 reset=force,
             )
@@ -103,6 +108,10 @@ def run_single(config: dict, force: bool = False) -> dict:
                 b for b in history.get("total_array_payload_bytes", []) if b is not None
             )
             final_metrics["dp_epsilon_max"] = next((e for e in reversed(history["dp_epsilon_max"]) if e is not None), None)
+            selected_ratios = [r for r in history.get("selected_sparsity_ratio_mean", []) if r is not None]
+            final_metrics["selected_sparsity_ratio_mean"] = (
+                float(np.mean(selected_ratios)) if selected_ratios else None
+            )
             result = {"run_id": run_id, "config": config, "final_metrics": final_metrics, "history": history}
             for i, rnd in enumerate(history["rounds"]):
                 round_metrics = {k: v[i] for k, v in history.items() if k != "rounds" and v[i] is not None}

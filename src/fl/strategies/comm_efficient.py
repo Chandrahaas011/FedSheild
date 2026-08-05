@@ -22,12 +22,14 @@ from src.fl.param_utils import bidirectional_array_payload_bytes, dense_bytes, f
 
 
 class CommEfficientFedAvg(FedAvg):
-    def __init__(self, initial_ndarrays: list[np.ndarray], topk_ratio: float = -1, **kwargs):
+    def __init__(self, initial_ndarrays: list[np.ndarray], topk_ratio: float = -1,
+                 sparse_updates: bool = False, **kwargs):
         self.model_shapes = [a.shape for a in initial_ndarrays]
         flat, sizes = flatten(initial_ndarrays)
         self.sizes = sizes
         self.global_flat = flat
         self.topk_ratio = topk_ratio
+        self.sparse_updates = sparse_updates
         # Every selected client receives the current dense global model before it can
         # train.  Keep this separate from client-upload bytes: sparsification only
         # changes the latter in this protocol.
@@ -43,7 +45,7 @@ class CommEfficientFedAvg(FedAvg):
         total_examples = sum(fit_res.num_examples for _, fit_res in results)
         total_bytes = 0
 
-        if self.topk_ratio and self.topk_ratio > 0:
+        if self.sparse_updates:
             agg_delta = np.zeros_like(self.global_flat)
             for _, fit_res in results:
                 ndarrays = parameters_to_ndarrays(fit_res.parameters)
@@ -84,6 +86,10 @@ class CommEfficientFedAvg(FedAvg):
         eps_vals = [fit_res.metrics["dp_epsilon"] for _, fit_res in results if "dp_epsilon" in fit_res.metrics]
         if eps_vals:
             metrics_agg["dp_epsilon_max"] = max(eps_vals)
+        sparsity_vals = [fit_res.metrics["selected_sparsity_ratio"] for _, fit_res in results
+                         if "selected_sparsity_ratio" in fit_res.metrics]
+        if sparsity_vals:
+            metrics_agg["selected_sparsity_ratio_mean"] = float(np.mean(sparsity_vals))
         loss_vals = [(fit_res.num_examples, fit_res.metrics.get("train_loss", 0.0)) for _, fit_res in results]
         if loss_vals:
             metrics_agg["train_loss"] = sum(n * l for n, l in loss_vals) / total_examples

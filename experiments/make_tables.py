@@ -20,6 +20,8 @@ METHOD_LABELS = {
     "fedavg": "FedAvg",
     "topk": "Your-method (top-k)",
     "topk_dp": "Your-method+DP (flagship)",
+    "ra_topk": "RA-TopK",
+    "ra_topk_dp": "RA-TopK + DP (flagship)",
 }
 
 
@@ -53,7 +55,7 @@ def table1() -> pd.DataFrame:
     (see experiments/run_experiment.py), so per-class recall/FPR/precision are real for
     every row, not just the centralized one."""
     rows = []
-    for method in ["centralized", "fedavg", "topk", "topk_dp"]:
+    for method in ["centralized", "fedavg", "topk", "ra_topk", "topk_dp", "ra_topk_dp"]:
         metric_dicts = []
         upload_per_round_vals, total_payload_per_round_vals, converge_round_vals = [], [], []
         for seed in SEEDS:
@@ -105,7 +107,7 @@ def table1() -> pd.DataFrame:
 def table2() -> pd.DataFrame:
     """Non-IID robustness: macro-F1 across alpha, FedAvg vs your-method (ROADMAP.md §3 Table 2)."""
     rows = []
-    for method in ["fedavg", "topk"]:
+    for method in ["fedavg", "topk", "ra_topk"]:
         for alpha in [0.1, 0.5, 1.0, "iid"]:
             f1_vals = []
             for seed in SEEDS:

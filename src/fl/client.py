@@ -7,7 +7,7 @@ from flwr.client import NumPyClient
 
 from src.fl.dp import make_dp_compatible, train_with_dp
 from src.fl.param_utils import dense_bytes, flatten, get_shapes, unflatten
-from src.fl.sparsify import sparse_bytes, topk_sparsify
+from src.fl.sparsify import residual_adaptive_topk_sparsify, sparse_bytes, topk_sparsify
 from src.metrics import compute_metrics
 from src.models.build import build_model
 
@@ -68,13 +68,14 @@ class FlowerNIDSClient(NumPyClient):
             # client can draw zero samples for every class. Report a no-op update with
             # num_examples=0 so the server's weighted aggregation simply ignores it.
             topk_ratio = float(config.get("topk_ratio", -1))
-            if topk_ratio > 0:
+            if topk_ratio > 0 or bool(config.get("adaptive_topk", False)):
                 return [np.array([], dtype=np.int64), np.array([], dtype=np.float32)], 0, {"bytes_sent": 0, "is_sparse": True}
             return parameters, 0, {"bytes_sent": 0, "is_sparse": False}
 
         lr = float(config.get("lr", 0.01))
         local_epochs = int(config.get("local_epochs", 1))
         topk_ratio = float(config.get("topk_ratio", -1))
+        adaptive_topk = bool(config.get("adaptive_topk", False))
         use_dp = bool(config.get("dp", False))
         run_id = str(config.get("run_id", "default"))
         server_round = int(config.get("server_round", 0))
@@ -118,9 +119,19 @@ class FlowerNIDSClient(NumPyClient):
         new_flat, _ = flatten(new_params)
         delta = new_flat - global_flat
 
-        if topk_ratio > 0:
+        if adaptive_topk or topk_ratio > 0:
             residual = _load_residual(self.client_id, run_id, len(delta))
-            idx, values, new_residual = topk_sparsify(delta, topk_ratio, residual)
+            if adaptive_topk:
+                idx, values, new_residual, selected_ratio = residual_adaptive_topk_sparsify(
+                    delta, residual,
+                    min_ratio=float(config.get("adaptive_min_ratio", 0.02)),
+                    max_ratio=float(config.get("adaptive_max_ratio", 0.20)),
+                    energy_target=float(config.get("adaptive_energy_target", 0.90)),
+                )
+                metrics["selected_sparsity_ratio"] = float(selected_ratio)
+            else:
+                idx, values, new_residual = topk_sparsify(delta, topk_ratio, residual)
+                metrics["selected_sparsity_ratio"] = float(topk_ratio)
             _save_residual(self.client_id, run_id, new_residual)
             metrics["bytes_sent"] = sparse_bytes(idx, values)
             metrics["is_sparse"] = True

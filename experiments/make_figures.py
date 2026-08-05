@@ -24,12 +24,16 @@ METHOD_COLORS = {
     "fedavg": "#E69F00",
     "topk": "#009E73",
     "topk_dp": "#D55E00",
+    "ra_topk": "#CC79A7",
+    "ra_topk_dp": "#56B4E9",
 }
 METHOD_LABELS = {
     "centralized": "Centralized",
     "fedavg": "FedAvg",
     "topk": "Your-method (top-k)",
     "topk_dp": "Your-method+DP (flagship)",
+    "ra_topk": "RA-TopK",
+    "ra_topk_dp": "RA-TopK + DP",
 }
 DIVERGING_POS = "#D55E00"  # pushes toward attack prediction
 DIVERGING_NEG = "#0072B2"  # pushes toward benign prediction
@@ -70,7 +74,7 @@ def _mean_std_over_seeds(method: str, key: str):
 
 def figure1_convergence():
     fig, ax = plt.subplots(figsize=(7, 4.5))
-    for method in ["fedavg", "topk", "topk_dp"]:
+    for method in ["fedavg", "topk", "ra_topk", "topk_dp", "ra_topk_dp"]:
         rounds, means, stds = _mean_std_over_seeds(method, "server_test_macro_f1")
         if len(rounds) == 0:
             continue
@@ -96,7 +100,7 @@ def figure1_convergence():
 
 def figure2_communication_savings():
     fig, ax = plt.subplots(figsize=(7, 4.5))
-    for method in ["fedavg", "topk"]:
+    for method in ["fedavg", "topk", "ra_topk"]:
         rounds, means, stds = _mean_std_over_seeds(method, "cumulative_bytes")
         if len(rounds) == 0:
             continue

@@ -17,7 +17,7 @@ def load_trained_model(run_id: str, config: dict, n_features: int, n_classes: in
         ckpt = load_checkpoint(Path("checkpoints") / run_id / "centralized.pt")
         model.load_state_dict(ckpt["model_state"])
     else:
-        if config.get("dp", False) or config["method"] == "topk_dp":
+        if config.get("dp", False) or config["method"] in ("topk_dp", "ra_topk_dp"):
             model = make_dp_compatible(model)
         params_path = Path("checkpoints") / run_id / "global_params.npz"
         loaded = np.load(params_path)

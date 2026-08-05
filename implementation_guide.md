@@ -1,5 +1,12 @@
 # Implementation and Reproduction Guide
 
+## Flagship method: RA-TopK
+
+Residual-Adaptive Top-*k* (RA-TopK) combines the current client update with its saved
+error-feedback residual and sends the smallest magnitude-ranked prefix that preserves
+`adaptive_energy_target` squared-L2 energy. `adaptive_min_ratio` and
+`adaptive_max_ratio` bound the upload. Use `configs/ra_topk_dp.yaml` for the DP flagship.
+
 ## 1. Environment
 
 ```powershell

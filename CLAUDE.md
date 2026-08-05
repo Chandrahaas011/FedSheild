@@ -2,9 +2,10 @@
 
 ## Purpose
 
-FedShield is research code for a reproducible federated IDS evaluation. It is not a
-production deployment. Preserve the distinction between measured evidence and planned
-work in both code and documentation.
+FedShield implements Residual-Adaptive Top-*k* (RA-TopK) for federated IDS: each client
+selects a bounded sparse budget from residual-corrected update energy. It is research
+code, not a production deployment. Preserve the distinction between measured evidence
+and planned work in both code and documentation.
 
 ## Core invariants
 
