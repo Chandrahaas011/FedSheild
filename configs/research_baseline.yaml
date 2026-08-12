@@ -1,0 +1,38 @@
+project: shift_aware_compact_ids
+dataset: corrected_cicids2017
+dataset_path: data/processed/research_cicids2017.parquet
+metadata_path: data/processed/research_metadata.json
+task: binary
+seeds: [0, 1, 2, 3, 4]
+
+# Caps keep the complete protocol practical on the local CPU. Sampling is stratified,
+# deterministic, and performed independently inside each already-frozen partition.
+max_train_rows: 300000
+max_validation_rows: 75000
+max_test_rows: 100000
+
+models:
+  - logistic_regression
+  - decision_tree
+  - random_forest
+  - hist_gradient_boosting
+
+feature_budgets: [78, 30, 20, 10, 5]
+primary_model: hist_gradient_boosting
+selection_repeats: 5
+selection_sample_rows: 100000
+validation_tolerance_macro_f1: 0.01
+fpr_constraint: 0.01
+uncertainty_alpha: 0.10
+uncertainty_target_coverage: 0.90
+uncertainty_validation_roles: [0.40, 0.30, 0.30]
+density_fusion_weight: 0.50
+density_reference_rows_per_class: 50000
+heldout_attack_families:
+  - DDoS
+  - PortScan
+  - Brute Force
+  - Web Attack
+
+output_dir: results/metrics
+artifact_dir: models/artifacts

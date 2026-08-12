@@ -1,0 +1,42 @@
+project: cross_dataset_netflow_v2_ids
+dataset_version: NetFlow-v2
+source_records:
+  nf_unsw_nb15_v2:
+    uuid: 8c6e2a00-ef9c-11ed-827d-e762de186848
+    published_rows: 2390275
+    archive_path: data/raw/netflow_v2/nf_unsw_nb15_v2.zip
+  nf_ton_iot_v2:
+    uuid: a4ad7080-ef9c-11ed-a964-b70596e96ad5
+    published_rows: 16940496
+    archive_path: data/raw/netflow_v2/nf_ton_iot_v2.zip
+
+processed_dir: data/processed/netflow_v2
+metadata_path: data/processed/netflow_v2/metadata.json
+output_dir: results/metrics
+artifact_dir: models/artifacts
+seeds: [0, 1, 2, 3, 4]
+
+# Deterministic hash-priority caps are applied separately by binary class after
+# non-finite removal and feature-level deduplication.
+maximum_rows_per_class: 200000
+maximum_train_rows: 300000
+maximum_validation_rows: 75000
+maximum_target_test_rows: 200000
+chunk_rows: 250000
+
+models:
+  - decision_tree
+  - hist_gradient_boosting
+uncertainty_alpha: 0.10
+uncertainty_target_coverage: 0.90
+feature_transform: signed_log1p
+
+# Conservative exclusions are resolved case-insensitively after inspecting the archive.
+exclude_name_patterns:
+  - IPV4_SRC_ADDR
+  - IPV4_DST_ADDR
+  - L4_SRC_PORT
+  - L4_DST_PORT
+  - FLOW_ID
+  - TIMESTAMP
+  - DNS_QUERY_ID

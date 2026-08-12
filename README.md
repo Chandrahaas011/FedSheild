@@ -1,77 +1,171 @@
-# FedShield: Residual-Adaptive Private Federated Intrusion Detection
+# Beyond Random Splits: Cross-Testbed Evaluation of Conformal Abstention for Lightweight Intrusion Detection
 
-FedShield is a major-project system for training a network intrusion detector across
-heterogeneous data owners without centralizing their raw traffic. Its proposed method,
-**Residual-Adaptive Top-*k* (RA-TopK)**, changes each client's communication budget from
-round to round: it transmits the smallest bounded set of residual-corrected update
-coordinates that retains a target fraction of update energy. The system can combine this
-method with record-level DP-SGD and privacy-accounting, then reports utility, privacy,
-and bidirectional numeric-array payload together.
+Leakage-aware, resource-controlled research on lightweight intrusion detection with
+explicit uncertainty handling under campaign and unseen-attack shift.
 
-**Paper title:** *FedShield: Residual-Adaptive Compression for Differentially Private
-Federated Intrusion Detection Under Non-IID Traffic.*
+The repository now contains two related systems:
 
-## What is novel here
+1. the primary classical-ML research pipeline described in the current paper; and
+2. the preserved legacy FedShield federated-learning simulator, retained for provenance
+   but not used to support the paper's empirical claims.
 
-Fixed top-*k* sparsification sends the same fraction of every client update, even when
-one client's update is concentrated and another's is diffuse. RA-TopK uses error
-feedback and selects the minimum number of largest-magnitude coordinates that reaches a
-configured L2-energy target, constrained by a minimum and maximum ratio. This makes the
-upload budget responsive to each client's training signal while bounding communication
-cost. The research question is whether this adaptive budget preserves IDS utility under
-non-IID traffic better than a fixed budget at comparable payload.
+## Main finding
 
-This is a real implemented method, not a claim that an untested method has already won.
-`configs/ra_topk_dp.yaml` is the flagship configuration. The existing legacy pilot
-results are baselines only; RA-TopK must be evaluated through the prescribed matrix
-before any result or novelty-performance claim is submitted.
+Corrected CICIDS2017 models reach approximately 0.995 random-test macro-F1, but the best
+Monday--Wednesday to Friday compound-shift result is 0.7759. Held-out-family recall
+ranges from zero to 0.9661. RT-IoT2022 independently reproduces the gap: HGB decreases
+from 0.9903 random-test macro-F1 to 0.7441--0.9459 across excluded attacks. A
+class-conditional conformal reject option converts many confident unseen-attack misses
+into `unknown` alerts, but costs about 10% benign escalation and can reject attacks that
+the base model already detects. It is a safety mechanism, not a universal robustness fix.
+A frozen 50/50 fusion with class-conditional robust-distance novelty was also tested and
+rejected: it restored confident misses for held-out CICIDS PortScan and Brute Force.
 
-## System scope and honest boundaries
+The strongest external-validity result comes from a frozen bidirectional transfer using
+38 common, identifier-excluded NetFlow-v2 features. Source validation macro-F1 remains
+0.9359--0.9665, yet target macro-F1 falls to 0.3173--0.4001 and malicious recall to
+0.00009--0.01635. Source-calibrated Mondrian abstention does not rescue this shift:
+depending on direction and model, 82.17%--99.28% of target attacks remain confident
+benign misses. A shared feature schema therefore enables a fair transfer test, but does
+not itself provide cross-testbed generalization.
 
-- **Data and federation:** corrected CICIDS2017, simulated Flower clients, IID or
-  Dirichlet non-IID partitions. Raw traffic is not sent to the server in this simulator.
-- **Privacy:** DP-SGD uses Opacus with per-client RDP accounting. Epsilon is record-level
-  at delta=1e-5 under the accounting assumptions. Federated learning, sparsity, and this
-  simulator alone do not provide client-level DP, secure aggregation, or deployment-wide
-  confidentiality.
-- **Communication:** each round records client upload, dense server downlink, and their
-  combined numeric-array payload. It excludes framework serialization, headers, retries,
-  and real network overhead. Sparse uploads do not make the dense broadcast sparse.
-- **Explainability:** the normal artifact contains only per-class, mean-absolute SHAP
-  summaries. Per-alert values require `--export-local-examples` and remain local debug
-  material, not a server-facing feature.
+The recommended paper title is:
 
-## Quick start
+> **Beyond Random Splits: Cross-Testbed Evaluation of Conformal Abstention for
+> Lightweight Intrusion Detection**
 
-```powershell
-./.venv/Scripts/python.exe -m pip install -r requirements.txt
-./.venv/Scripts/python.exe -m pytest tests -q
+## Repository map
 
-# Put corrected CICIDS2017 CSVs under data/raw/cicids2017_corrected/ first.
-./.venv/Scripts/python.exe -m src.data.preprocess
-
-# Functional check; --force clears only the matching run's checkpoint, residual, and DP state.
-./.venv/Scripts/python.exe -m experiments.run_experiment --config configs/smoke.yaml --force
-
-# Flagship RA-TopK + DP run.
-./.venv/Scripts/python.exe -m experiments.run_experiment --config configs/ra_topk_dp.yaml --force
+```text
+configs/                 Frozen experiment configurations
+data/raw/                Local datasets (ignored by Git)
+data/processed/          Canonical Parquet data and manifests (ignored)
+docs/                    Audit, transformation log, and literature review
+experiments/             Reproducible experiment and output-generation entry points
+models/artifacts/        Serialized fitted models (ignored)
+paper/                   IEEEtran draft, Markdown draft, and verified BibTeX
+results/metrics/         Machine-readable experiment records and master JSONL
+results/figures/         Publication PDF/SVG plus PNG previews (generated, ignored)
+results/tables/          Generated CSV tables (ignored)
+src/                     Data, model, evaluation, feature, and preserved FL code
+tests/                   Reproducibility and correctness checks
 ```
 
-The flagship parameters are `adaptive_min_ratio`, `adaptive_max_ratio`, and
-`adaptive_energy_target`. A client chooses the least number of coordinates needed to
-retain the target energy, then clips that number to the two ratios. Residual coordinates
-not sent this round are carried forward through error feedback.
+## Environment
 
-## Submission standard
+Tested locally with Python 3.10 on CPU-only Windows. No paid API, cloud service, or new
+hardware is required.
 
-Before presenting RA-TopK as publishable evidence, run at least five seeds, full data,
-100+ rounds or convergence, IID plus alpha = 1.0/0.5/0.1, a second public dataset, and
-the baselines Centralized, FedAvg, FedProx, fixed top-*k*, fixed top-*k* + DP, RA-TopK,
-and RA-TopK + DP. Lead with macro-F1, minority-class recall, false-positive rate,
-calibration, epsilon, and both payload measures; use confidence intervals and a
-predeclared paired test.
+```powershell
+py -3.10 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
 
-See [research_paper.md](research_paper.md) for the IEEE-style manuscript,
-[literarysurvey-template.md](literarysurvey-template.md) for the recent-literature gap,
-[implementation_guide.md](implementation_guide.md) for reproducibility, and
-[PRESENTATION_QA.md](PRESENTATION_QA.md) for a viva drill.
+## Data
+
+Large data is intentionally excluded from Git.
+
+- Place the corrected CICIDS2017 weekday CSV files in `data/raw/`. See the
+  [official CICIDS2017 page](https://www.unb.ca/cic/datasets/ids-2017.html) and correction
+  paper DOI `10.1109/SPW53761.2021.00009`.
+- Download the 3.3-MB CC BY 4.0
+  [RT-IoT2022 archive](https://archive.ics.uci.edu/static/public/942/rt-iot2022.zip),
+  extract `RT_IOT2022`, and set `raw_path` in `configs/rt_iot2022.yaml` if needed.
+- The bounded cross-testbed study uses the official University of Queensland
+  [NetFlow-v2 collection](https://staff.itee.uq.edu.au/marius/NIDS_datasets/): place the
+  NF-UNSW-NB15-v2 and NF-ToN-IoT-v2 ZIP archives at the paths configured in
+  `configs/netflow_v2_cross.yaml`. The UQ record permits academic research use with
+  citation; raw archives remain local because no broader redistribution permission is
+  assumed.
+
+The local archive hashes used for the reported results are recorded in the generated
+metadata and result JSON files.
+
+## Reproduce the study
+
+Prepare the canonical datasets:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.data.research_prepare --force
+.\.venv\Scripts\python.exe -m src.data.prepare_rt_iot2022 --config configs/rt_iot2022.yaml
+.\.venv\Scripts\python.exe -m src.data.prepare_netflow_v2 --config configs/netflow_v2_cross.yaml
+```
+
+Minimal CICIDS baseline:
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.run_research_baseline --config configs/research_baseline.yaml --model decision_tree --seed 0
+```
+
+Complete constrained experiment matrix:
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.run_research_grid --config configs/research_baseline.yaml
+.\.venv\Scripts\python.exe -m experiments.run_shift_grid --config configs/research_baseline.yaml
+.\.venv\Scripts\python.exe -m experiments.run_heldout_grid --config configs/research_baseline.yaml
+.\.venv\Scripts\python.exe -m experiments.run_rt_iot2022_grid --config configs/rt_iot2022.yaml
+.\.venv\Scripts\python.exe -m experiments.run_uncertainty_grid --stage all
+.\.venv\Scripts\python.exe -m experiments.run_density_uncertainty_grid --stage all
+.\.venv\Scripts\python.exe -m experiments.run_cross_netflow_grid --config configs/netflow_v2_cross.yaml
+```
+
+Regenerate every reported table and figure from saved JSON results:
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.make_research_outputs
+```
+
+Run quality gates:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m compileall -q src experiments
+```
+
+## Results and claims
+
+- `results/metrics/master_results.jsonl` is the canonical experiment ledger.
+- Each JSON stores dataset hash, split protocol, seed, code state, parameters, metrics,
+  timing, efficiency measurements, and hardware.
+- CSVs and figures are generated; no result is manually typed into plotting code.
+- Accuracy is secondary; macro-F1, malicious recall, MCC, FPR, Brier score, and ECE are
+  retained.
+- The campaign-stable compact model is a negative result under shift and is not claimed
+  to be drift-robust.
+- The conformal method accepts only singleton prediction sets. Empty or ambiguous sets
+  become `unknown` alerts; finite-sample coverage guarantees are claimed only under
+  exchangeability, never for shifted or held-out tests.
+- The ledger contains 281 completed records: 141 baseline/shift records, 65
+  probability-uncertainty records, 55 distance-aware ablation records, and 20 frozen
+  bidirectional NetFlow-v2 transfer records.
+- Generated statistical outputs include paired seed-wise effects, deterministic
+  bootstrap intervals, exact sign-flip tests, and risk--coverage area summaries.
+- The output builder produces 16 machine-readable CSV tables and 17 publication figures
+  in PDF, SVG, and PNG; Figures 16--17 report cross-testbed transfer and family outcomes.
+- The literature review was refreshed through 2026. Because recent work already covers
+  cross-network degradation, adaptive IDS, and physical MCU deployment, the claimed gap
+  is specifically source-frozen, target-untuned transfer of both prediction and
+  source-calibrated abstention under a shared feature ontology.
+
+## Research documents
+
+- [Project audit](docs/PROJECT_AUDIT.md)
+- [Transformation log](docs/RESEARCH_TRANSFORMATION.md)
+- [Literature and novelty review](docs/LITERATURE_REVIEW.md)
+- [IEEE-style paper draft](paper/main.md)
+- [IEEEtran source](paper/main.tex)
+- [Self-contained Overleaf source](paper/overleaf_main.tex)
+- [Copy-paste LaTeX code in Markdown](paper/OVERLEAF_LATEX_CODE.md)
+- [Overleaf compilation instructions](paper/OVERLEAF_INSTRUCTIONS.md)
+- [Verified BibTeX](paper/references.bib)
+- [Presentation questions and answers](PRESENTATION_QA.md)
+
+Publication is not guaranteed. The repository provides a defensible draft and
+reproducible evidence; author details, venue fit, page limits, and advisor review remain
+the student's responsibility.
+
+For the fastest paper handoff, copy the fenced source from
+`paper/OVERLEAF_LATEX_CODE.md` into a blank Overleaf project's `main.tex`. It contains
+four author placeholders and an inline bibliography, and it compiles without uploaded
+figures by rendering labeled fallback boxes. An automated test prevents this Markdown
+copy and the canonical `paper/overleaf_main.tex` source from diverging.
