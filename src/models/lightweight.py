@@ -87,6 +87,14 @@ def build_lightweight_model(name: str, seed: int):
             min_samples_leaf=5,
             random_state=seed,
         )
+    if name == "robust_decision_tree":
+        return DecisionTreeClassifier(
+            class_weight="balanced",
+            max_depth=8,
+            min_samples_leaf=20,
+            ccp_alpha=0.001,
+            random_state=seed,
+        )
     if name == "random_forest":
         return RandomForestClassifier(
             n_estimators=150,

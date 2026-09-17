@@ -1,0 +1,40 @@
+project: netflow_v2_shadow_resumption
+dataset_version: NetFlow-v2-label-blind-v1
+processed_dir: data/processed/netflow_v2_label_blind
+metadata_path: data/processed/netflow_v2_label_blind/metadata.json
+output_dir: results/metrics
+artifact_dir: models/artifacts/shadow_resumption
+experiment_prefix: shadow_resumption
+protocol_name: prospective_two_stage_shadow_resumption
+seeds: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+maximum_train_rows: 140000
+maximum_validation_rows: 60000
+maximum_target_test_rows: 200000
+feature_transform: signed_log1p
+
+recovery:
+  source_model: decision_tree
+  actions: [no_adaptation, recalibration, compact_retraining]
+  label_budgets: [100, 500, 2000]
+  maximum_review_rows: 2000
+  validation_rows: 5000
+  shadow_validation_rows: 5000
+  final_audit_rows: 20000
+  diagnosis_windows: 12
+  diagnosis_top_features: 10
+  gate_mode: wilson_fpr_upper_95
+  gate:
+    minimum_macro_f1: 0.80
+    minimum_malicious_recall: 0.80
+    maximum_false_positive_rate: 0.10
+    maximum_ece: 0.10
+    maximum_model_bytes: 1048576
+    maximum_single_record_latency_p95_ms: 5.0
+
+domain_shift_validation:
+  window_size: 512
+  quantile_bins: 10
+  calibration_alpha: 0.05
+  maximum_reference_rows: 100000
+  maximum_ks_reference_rows: 4096
+  minimum_calibration_windows: 10

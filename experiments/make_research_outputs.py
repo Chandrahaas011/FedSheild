@@ -14,6 +14,10 @@ from sklearn.calibration import calibration_curve
 from sklearn.metrics import precision_recall_curve
 
 from experiments.research_common import load_random_partitions
+from experiments.safe_resumption_common import (
+    choose_resumption_action,
+    uncertainty_aware_gate_passes,
+)
 from src.evaluation.statistics import paired_effect_summary, risk_coverage_area
 
 METRICS_DIR = Path("results/metrics")
@@ -487,6 +491,426 @@ def make_tables(records: list[dict], metadata: dict) -> dict[str, pd.DataFrame]:
             cross_family_summary_rows.append(row)
     cross_family_summary = pd.DataFrame(cross_family_summary_rows)
 
+    domain_primary_rows, domain_ablation_rows = [], []
+    for record in records:
+        if not record["experiment_id"].startswith("domain_shift_"):
+            continue
+        primary = record["domain_shift"]["primary"]
+        operational = record["domain_shift"]["guarded_operational_outputs"]
+        common = {
+            "source": record["protocol"]["source"],
+            "target": record["protocol"]["target"],
+            "seed": record["seed"],
+        }
+        domain_primary_rows.append(
+            {
+                **common,
+                "source_audit_false_alarm_rate": primary["source_audit"]["alarm_rate"],
+                "mixed_target_detection_rate": primary["mixed_target"]["alarm_rate"],
+                "benign_target_detection_rate": primary["benign_target_diagnostic"]["alarm_rate"],
+                "malicious_target_detection_rate": primary["malicious_target_diagnostic"]["alarm_rate"],
+                "source_audit_score_mean": primary["source_audit"]["score_mean"],
+                "mixed_target_score_mean": primary["mixed_target"]["score_mean"],
+                "benign_target_score_mean": primary["benign_target_diagnostic"]["score_mean"],
+                "threshold": primary["threshold"],
+                "domain_shift_output_rate": operational["output_rates"]["DOMAIN_SHIFT_DETECTED"],
+                "withheld_base_confident_fn_fraction": operational["withheld_fraction_of_base_confident_false_negatives"],
+                "window_latency_ms": record["efficiency"]["window_latency_ms_median"],
+                "throughput_records_per_second": record["efficiency"]["throughput_records_per_second"],
+                "guarded_model_kib": record["efficiency"]["serialized_guarded_model_bytes"] / 1024,
+                "passed": int(record["domain_shift"]["success_criterion"]["passed"]),
+            }
+        )
+        variants = {
+            "primary_10_bin_mean": {
+                "quantile_bins": primary["quantile_bins"],
+                "aggregation": primary["aggregation"],
+                **primary,
+            },
+            **record["domain_shift"].get("ablations", {}),
+        }
+        for variant, details in variants.items():
+            domain_ablation_rows.append(
+                {
+                    **common,
+                    "variant": variant,
+                    "quantile_bins": details["quantile_bins"],
+                    "aggregation": details["aggregation"],
+                    "source_audit_false_alarm_rate": details["source_audit"]["alarm_rate"],
+                    "mixed_target_detection_rate": details["mixed_target"]["alarm_rate"],
+                    "benign_target_detection_rate": details["benign_target_diagnostic"]["alarm_rate"],
+                    "threshold": details["threshold"],
+                }
+            )
+
+    def summarize_domain(frame: pd.DataFrame, groups: list[str]) -> pd.DataFrame:
+        rows = []
+        if frame.empty:
+            return pd.DataFrame()
+        excluded = set(groups + ["seed"])
+        numeric = [column for column in frame.columns if column not in excluded]
+        for keys, group in frame.groupby(groups):
+            if not isinstance(keys, tuple):
+                keys = (keys,)
+            row = dict(zip(groups, keys))
+            row["n_seeds"] = len(group)
+            for metric in numeric:
+                values = group[metric].to_numpy(dtype=float)
+                row[f"{metric}_mean"] = float(values.mean())
+                row[f"{metric}_std"] = sample_std(values)
+            rows.append(row)
+        return pd.DataFrame(rows)
+
+    domain_primary_summary = summarize_domain(
+        pd.DataFrame(domain_primary_rows), ["source", "target"]
+    )
+    domain_ablation_summary = summarize_domain(
+        pd.DataFrame(domain_ablation_rows),
+        ["source", "target", "variant", "quantile_bins", "aggregation"],
+    )
+
+    validation_method_rows, validation_mixture_rows = [], []
+    window_sensitivity_rows = []
+    for record in records:
+        if not record["experiment_id"].startswith("domain_validation_"):
+            continue
+        is_window_sensitivity = (
+            record["protocol"]["name"] == "label_blind_shift_window_sensitivity"
+        )
+        common = {
+            "source": record["protocol"]["source"],
+            "target": record["protocol"]["target"],
+            "seed": record["seed"],
+        }
+        for method, details in record["domain_shift_validation"]["methods"].items():
+            if is_window_sensitivity:
+                window_sensitivity_rows.append({
+                    **common,
+                    "window_size": record["domain_shift_validation"]["window_size"],
+                    "method": method,
+                    "source_audit_false_alarm_rate": details["source_audit"]["alarm_rate"],
+                    "target_10pct_alarm_rate": details["mixtures"]["0.1"]["alarm_rate"],
+                    "target_25pct_alarm_rate": details["mixtures"]["0.25"]["alarm_rate"],
+                    "target_50pct_alarm_rate": details["mixtures"]["0.5"]["alarm_rate"],
+                    "target_full_alarm_rate": details["target_full"]["alarm_rate"],
+                    "first_alarm_after_rows": details["target_full"]["first_alarm_after_rows"],
+                })
+                continue
+            validation_method_rows.append(
+                {
+                    **common,
+                    "method": method,
+                    "source_audit_false_alarm_rate": details["source_audit"]["alarm_rate"],
+                    "target_full_alarm_rate": details["target_full"]["alarm_rate"],
+                    "threshold": details["threshold"],
+                    "reference_rows": details["reference_rows"],
+                }
+            )
+            for fraction, metrics in details["mixtures"].items():
+                validation_mixture_rows.append(
+                    {
+                        **common,
+                        "method": method,
+                        "target_fraction": float(fraction),
+                        "alarm_rate": metrics["alarm_rate"],
+                        "score_mean": metrics["score_mean"],
+                    }
+                )
+    validation_method_summary = summarize_domain(
+        pd.DataFrame(validation_method_rows), ["source", "target", "method"]
+    )
+    validation_mixture_summary = summarize_domain(
+        pd.DataFrame(validation_mixture_rows),
+        ["source", "target", "method", "target_fraction"],
+    )
+    window_sensitivity_summary = summarize_domain(
+        pd.DataFrame(window_sensitivity_rows),
+        ["source", "target", "window_size", "method"],
+    )
+
+    recovery_action_rows, recovery_policy_rows, recovery_diagnosis_rows = [], [], []
+    recovery_sensitivity_rows = []
+    for record in records:
+        if not record["experiment_id"].startswith("safe_resumption_"):
+            continue
+        common = {
+            "source": record["protocol"]["source"],
+            "target": record["protocol"]["target"],
+            "seed": record["seed"],
+        }
+        for action in record["safe_resumption"]["actions"]:
+            recovery_action_rows.append({
+                **common,
+                "action": action["action"],
+                "label_budget": action["label_budget"],
+                "validation_macro_f1": action["validation_metrics"]["macro_f1"],
+                "validation_malicious_recall": action["validation_metrics"]["per_class"]["Malicious"]["recall"],
+                "validation_fpr": action["validation_metrics"]["false_positive_rate"],
+                "validation_ece": action["validation_metrics"]["ece_15"],
+                "final_audit_macro_f1": action["final_audit_metrics"]["macro_f1"],
+                "final_audit_malicious_recall": action["final_audit_metrics"]["per_class"]["Malicious"]["recall"],
+                "final_audit_fpr": action["final_audit_metrics"]["false_positive_rate"],
+                "final_audit_ece": action["final_audit_metrics"]["ece_15"],
+                "source_retention_macro_f1": action["source_retention_metrics"]["macro_f1"],
+                "training_seconds": action["training_seconds"],
+                "model_size_kib": action["efficiency"]["serialized_model_bytes"] / 1024,
+                "single_latency_p95_ms": action["efficiency"]["single_record_latency_ms_p95"],
+                "gate_passed": int(action["gate_passed"]),
+                "final_audit_passed": int(action["final_audit_passed"]),
+                "unsafe_resumption": int(action["unsafe_resumption"]),
+            })
+        policy = record["safe_resumption"]["selected_policy"]
+        recovery_policy_rows.append({
+            **common,
+            "decision": policy["decision"],
+            "selected_action": policy["action"],
+            "selected_label_budget": policy["label_budget"],
+            "final_audit_passed": int(bool(policy["final_audit_passed"])),
+            "unsafe_resumption": int(policy["unsafe_resumption"]),
+        })
+        sensitivity_actions = []
+        for action in record["safe_resumption"]["actions"]:
+            passed, upper_fpr = uncertainty_aware_gate_passes(
+                action["validation_metrics"],
+                action["efficiency"],
+                record["safe_resumption"]["gate_criteria"],
+            )
+            candidate = dict(action)
+            candidate["gate_passed"] = passed
+            candidate["validation_fpr_wilson_upper_95"] = upper_fpr
+            sensitivity_actions.append(candidate)
+        sensitivity_selected = choose_resumption_action(sensitivity_actions)
+        recovery_sensitivity_rows.append({
+            **common,
+            "analysis_status": "post_hoc_sensitivity_analysis",
+            "decision": "SAFE_TO_RESUME" if sensitivity_selected else "RECALIBRATION_REQUIRED",
+            "selected_action": sensitivity_selected["action"] if sensitivity_selected else "none",
+            "selected_label_budget": sensitivity_selected["label_budget"] if sensitivity_selected else 0,
+            "validation_fpr": sensitivity_selected["validation_metrics"]["false_positive_rate"] if sensitivity_selected else "",
+            "validation_fpr_wilson_upper_95": sensitivity_selected["validation_fpr_wilson_upper_95"] if sensitivity_selected else "",
+            "final_audit_passed": int(sensitivity_selected["final_audit_passed"]) if sensitivity_selected else 0,
+            "unsafe_resumption": int(
+                bool(sensitivity_selected)
+                and not sensitivity_selected["final_audit_passed"]
+            ),
+        })
+        for feature in record["safe_resumption"]["diagnosis"]["top_features"]:
+            recovery_diagnosis_rows.append({**common, **feature})
+    recovery_action_summary = summarize_domain(
+        pd.DataFrame(recovery_action_rows), ["source", "target", "action", "label_budget"]
+    )
+    recovery_policy = pd.DataFrame(recovery_policy_rows)
+    recovery_diagnosis = pd.DataFrame(recovery_diagnosis_rows)
+    recovery_sensitivity = pd.DataFrame(recovery_sensitivity_rows)
+
+    prospective_rows = []
+    for record in records:
+        if not record["experiment_id"].startswith("prospective_resumption_"):
+            continue
+        policy = record["safe_resumption"]["selected_policy"]
+        selected = next(
+            (
+                action
+                for action in record["safe_resumption"]["actions"]
+                if action["action"] == policy["action"]
+                and action["label_budget"] == policy["label_budget"]
+            ),
+            None,
+        )
+        prospective_rows.append({
+            "source": record["protocol"]["source"],
+            "target": record["protocol"]["target"],
+            "seed": record["seed"],
+            "decision": policy["decision"],
+            "selected_action": policy["action"] or "none",
+            "selected_label_budget": policy["label_budget"] or 0,
+            "validation_macro_f1": selected["validation_metrics"]["macro_f1"] if selected else "",
+            "validation_fpr": selected["validation_metrics"]["false_positive_rate"] if selected else "",
+            "validation_fpr_wilson_upper_95": selected["validation_fpr_wilson_upper_95"] if selected else "",
+            "final_audit_macro_f1": selected["final_audit_metrics"]["macro_f1"] if selected else "",
+            "final_audit_fpr": selected["final_audit_metrics"]["false_positive_rate"] if selected else "",
+            "final_audit_fpr_wilson_upper_95": selected["final_audit_fpr_wilson_upper_95"] if selected else "",
+            "final_audit_passed": int(bool(policy["final_audit_passed"])),
+            "unsafe_resumption": int(policy["unsafe_resumption"]),
+            "source_retention_macro_f1": selected["source_retention_metrics"]["macro_f1"] if selected else "",
+            "model_size_kib": selected["efficiency"]["serialized_model_bytes"] / 1024 if selected else "",
+            "single_latency_p95_ms": selected["efficiency"]["single_record_latency_ms_p95"] if selected else "",
+        })
+    prospective_confirmation = pd.DataFrame(prospective_rows)
+
+    shadow_rows = []
+    for record in records:
+        if not record["experiment_id"].startswith("shadow_resumption_"):
+            continue
+        criteria = record["safe_resumption"]["gate_criteria"]
+        single_stage_actions = []
+        for action in record["safe_resumption"]["actions"]:
+            passed, _ = uncertainty_aware_gate_passes(
+                action["validation_metrics"], action["efficiency"], criteria
+            )
+            candidate = dict(action)
+            candidate["gate_passed"] = passed
+            single_stage_actions.append(candidate)
+        single_selected = choose_resumption_action(single_stage_actions)
+        shadow_policy = record["safe_resumption"]["selected_policy"]
+        shadow_selected = next(
+            (
+                action
+                for action in record["safe_resumption"]["actions"]
+                if action["action"] == shadow_policy["action"]
+                and action["label_budget"] == shadow_policy["label_budget"]
+            ),
+            None,
+        )
+        shadow_rows.append({
+            "source": record["protocol"]["source"],
+            "target": record["protocol"]["target"],
+            "seed": record["seed"],
+            "single_stage_decision": "SAFE_TO_RESUME" if single_selected else "RECALIBRATION_REQUIRED",
+            "single_stage_label_budget": single_selected["label_budget"] if single_selected else 0,
+            "single_stage_final_audit_passed": int(single_selected["final_audit_passed"]) if single_selected else 0,
+            "single_stage_unsafe_resumption": int(bool(single_selected) and not single_selected["final_audit_passed"]),
+            "shadow_decision": shadow_policy["decision"],
+            "shadow_label_budget": shadow_policy["label_budget"] or 0,
+            "shadow_final_audit_passed": int(bool(shadow_policy["final_audit_passed"])),
+            "shadow_unsafe_resumption": int(shadow_policy["unsafe_resumption"]),
+            "withheld_audit_pass": int(shadow_selected is None and bool(single_selected) and single_selected["final_audit_passed"]),
+            "prevented_unsafe_resumption": int(shadow_selected is None and bool(single_selected) and not single_selected["final_audit_passed"]),
+            "corrected_unsafe_selection": int(
+                bool(shadow_selected)
+                and bool(single_selected)
+                and not single_selected["final_audit_passed"]
+                and shadow_selected["final_audit_passed"]
+            ),
+            "selected_audit_macro_f1": shadow_selected["final_audit_metrics"]["macro_f1"] if shadow_selected else "",
+            "selected_source_retention_macro_f1": shadow_selected["source_retention_metrics"]["macro_f1"] if shadow_selected else "",
+        })
+    shadow_confirmation = pd.DataFrame(shadow_rows)
+
+    label_noise_rows = []
+    for record in records:
+        if not record["experiment_id"].startswith("label_noise_resumption_"):
+            continue
+        policy = record["safe_resumption"]["selected_policy"]
+        actions = record["safe_resumption"]["actions"]
+        selected = next(
+            (
+                action for action in actions
+                if action["action"] == policy["action"]
+                and action["label_budget"] == policy["label_budget"]
+            ),
+            None,
+        )
+        compact_2000 = next(
+            action for action in actions
+            if action["action"] == "compact_retraining" and action["label_budget"] == 2000
+        )
+        any_audit_pass = any(action["final_audit_passed"] for action in actions)
+        label_noise_rows.append({
+            "source": record["protocol"]["source"],
+            "target": record["protocol"]["target"],
+            "seed": record["seed"],
+            "review_label_noise_rate": record["safe_resumption"]["review_label_noise_rate"],
+            "decision": policy["decision"],
+            "selected_action": policy["action"] or "none",
+            "selected_label_budget": policy["label_budget"] or 0,
+            "final_audit_passed": int(bool(policy["final_audit_passed"])),
+            "unsafe_resumption": int(policy["unsafe_resumption"]),
+            "any_action_audit_passed": int(any_audit_pass),
+            "withheld_audit_capable_action": int(selected is None and any_audit_pass),
+            "compact_2000_validation_macro_f1": compact_2000["validation_metrics"]["macro_f1"],
+            "compact_2000_shadow_macro_f1": compact_2000["shadow_validation_metrics"]["macro_f1"],
+            "compact_2000_audit_macro_f1": compact_2000["final_audit_metrics"]["macro_f1"],
+            "compact_2000_audit_fpr": compact_2000["final_audit_metrics"]["false_positive_rate"],
+            "selected_audit_macro_f1": selected["final_audit_metrics"]["macro_f1"] if selected else "",
+            "selected_source_retention_macro_f1": selected["source_retention_metrics"]["macro_f1"] if selected else "",
+        })
+    label_noise_confirmation = pd.DataFrame(label_noise_rows)
+
+    robust_noise_rows = []
+    for record in records:
+        if not record["experiment_id"].startswith("robust_noise_resumption_"):
+            continue
+        actions = record["safe_resumption"]["actions"]
+        standard_selected = choose_resumption_action(
+            [action for action in actions if action["action"] != "robust_compact_retraining"]
+        )
+        enhanced_policy = record["safe_resumption"]["selected_policy"]
+        enhanced_selected = next(
+            (
+                action for action in actions
+                if action["action"] == enhanced_policy["action"]
+                and action["label_budget"] == enhanced_policy["label_budget"]
+            ),
+            None,
+        )
+        standard_2000 = next(
+            action for action in actions
+            if action["action"] == "compact_retraining" and action["label_budget"] == 2000
+        )
+        robust_2000 = next(
+            action for action in actions
+            if action["action"] == "robust_compact_retraining" and action["label_budget"] == 2000
+        )
+        robust_noise_rows.append({
+            "source": record["protocol"]["source"],
+            "target": record["protocol"]["target"],
+            "seed": record["seed"],
+            "review_label_noise_rate": record["safe_resumption"]["review_label_noise_rate"],
+            "standard_decision": "SAFE_TO_RESUME" if standard_selected else "RECALIBRATION_REQUIRED",
+            "standard_label_budget": standard_selected["label_budget"] if standard_selected else 0,
+            "standard_final_audit_passed": int(standard_selected["final_audit_passed"]) if standard_selected else 0,
+            "standard_unsafe_resumption": int(bool(standard_selected) and not standard_selected["final_audit_passed"]),
+            "enhanced_decision": enhanced_policy["decision"],
+            "enhanced_selected_action": enhanced_policy["action"] or "none",
+            "enhanced_label_budget": enhanced_policy["label_budget"] or 0,
+            "enhanced_final_audit_passed": int(bool(enhanced_policy["final_audit_passed"])),
+            "enhanced_unsafe_resumption": int(enhanced_policy["unsafe_resumption"]),
+            "standard_2000_audit_macro_f1": standard_2000["final_audit_metrics"]["macro_f1"],
+            "robust_2000_audit_macro_f1": robust_2000["final_audit_metrics"]["macro_f1"],
+            "standard_2000_audit_fpr": standard_2000["final_audit_metrics"]["false_positive_rate"],
+            "robust_2000_audit_fpr": robust_2000["final_audit_metrics"]["false_positive_rate"],
+            "enhanced_model_size_kib": enhanced_selected["efficiency"]["serialized_model_bytes"] / 1024 if enhanced_selected else "",
+            "enhanced_latency_p95_ms": enhanced_selected["efficiency"]["single_record_latency_ms_p95"] if enhanced_selected else "",
+        })
+    robust_noise_confirmation = pd.DataFrame(robust_noise_rows)
+
+    asymmetric_noise_rows = []
+    for record in records:
+        if not record["experiment_id"].startswith("asymmetric_noise_resumption_"):
+            continue
+        recovery = record["safe_resumption"]
+        rates = recovery["review_label_noise_by_class"]
+        benign_rate = float(rates.get("0", rates.get(0, 0.0)))
+        malicious_rate = float(rates.get("1", rates.get(1, 0.0)))
+        profile = (
+            f"benign→malicious {benign_rate:.0%}"
+            if benign_rate else f"malicious→benign {malicious_rate:.0%}"
+        )
+        policy = recovery["selected_policy"]
+        selected = next((
+            action for action in recovery["actions"]
+            if action["action"] == policy["action"]
+            and action["label_budget"] == policy["label_budget"]
+        ), None)
+        asymmetric_noise_rows.append({
+            "source": record["protocol"]["source"],
+            "target": record["protocol"]["target"],
+            "seed": record["seed"],
+            "profile": profile,
+            "benign_to_malicious_rate": benign_rate,
+            "malicious_to_benign_rate": malicious_rate,
+            "decision": policy["decision"],
+            "selected_action": policy["action"] or "none",
+            "selected_label_budget": policy["label_budget"] or 0,
+            "final_audit_passed": int(bool(policy["final_audit_passed"])),
+            "unsafe_resumption": int(policy["unsafe_resumption"]),
+            "selected_audit_macro_f1": selected["final_audit_metrics"]["macro_f1"] if selected else "",
+            "selected_audit_malicious_recall": selected["final_audit_metrics"]["per_class"]["Malicious"]["recall"] if selected else "",
+            "selected_audit_fpr": selected["final_audit_metrics"]["false_positive_rate"] if selected else "",
+        })
+    asymmetric_noise_confirmation = pd.DataFrame(asymmetric_noise_rows)
+
     tables = {
         "research_random_baselines.csv": random_table,
         "research_shift_results.csv": shift_table,
@@ -504,6 +928,20 @@ def make_tables(records: list[dict], metadata: dict) -> dict[str, pd.DataFrame]:
         "research_risk_coverage_summary.csv": aurc_summary,
         "research_cross_netflow_summary.csv": cross_summary,
         "research_cross_netflow_family.csv": cross_family_summary,
+        "research_domain_shift_summary.csv": domain_primary_summary,
+        "research_domain_shift_ablation.csv": domain_ablation_summary,
+        "research_domain_validation_methods.csv": validation_method_summary,
+        "research_domain_validation_mixtures.csv": validation_mixture_summary,
+        "research_domain_shift_window_sensitivity.csv": window_sensitivity_summary,
+        "research_safe_resumption_actions.csv": recovery_action_summary,
+        "research_safe_resumption_policy.csv": recovery_policy,
+        "research_safe_resumption_diagnosis.csv": recovery_diagnosis,
+        "research_safe_resumption_gate_sensitivity.csv": recovery_sensitivity,
+        "research_prospective_resumption_confirmation.csv": prospective_confirmation,
+        "research_shadow_resumption_confirmation.csv": shadow_confirmation,
+        "research_review_label_noise.csv": label_noise_confirmation,
+        "research_robust_review_label_noise.csv": robust_noise_confirmation,
+        "research_asymmetric_review_label_noise.csv": asymmetric_noise_confirmation,
     }
     for name, table in tables.items():
         table.to_csv(TABLES_DIR / name, index=False)
@@ -905,6 +1343,364 @@ def cross_netflow_family_figure(table: pd.DataFrame):
     _save_figure(fig, "research_figure17_cross_netflow_family")
 
 
+def domain_shift_rate_figure(table: pd.DataFrame):
+    display = {
+        "nf_unsw_nb15_v2": "NF-UNSW-NB15-v2",
+        "nf_ton_iot_v2": "NF-ToN-IoT-v2",
+    }
+    labels = [
+        f"{display[row.source]} →\n{display[row.target]}"
+        for row in table.itertuples()
+    ]
+    metrics = [
+        ("source_audit_false_alarm_rate", "Source audit\nfalse alarm"),
+        ("mixed_target_detection_rate", "Mixed target\nalarm"),
+        ("benign_target_detection_rate", "Benign target\nalarm"),
+    ]
+    x = np.arange(len(table))
+    width = 0.24
+    fig, ax = plt.subplots(figsize=(7.6, 4.5))
+    for index, (metric, label) in enumerate(metrics):
+        offset = (index - 1) * width
+        ax.bar(
+            x + offset,
+            table[f"{metric}_mean"],
+            width,
+            yerr=table[f"{metric}_std"],
+            capsize=3,
+            label=label,
+            color=PALETTE[index],
+        )
+    ax.set_xticks(x, labels)
+    ax.set_ylim(0, 1.08)
+    ax.set_ylabel("Fraction of 512-flow windows")
+    ax.set_title("Source-calibrated sentinel detects gross cross-testbed mismatch")
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend(fontsize=8, ncol=3, loc="upper center")
+    _save_figure(fig, "research_figure18_domain_shift_rates")
+
+
+def domain_shift_score_figure(records: list[dict]):
+    display = {
+        "nf_unsw_nb15_v2": "NF-UNSW → NF-ToN-IoT",
+        "nf_ton_iot_v2": "NF-ToN-IoT → NF-UNSW",
+    }
+    rows = []
+    score_groups = [
+        ("source_audit", "Source audit"),
+        ("mixed_target", "Mixed target"),
+        ("benign_target_diagnostic", "Benign target"),
+    ]
+    for record in records:
+        if not record["experiment_id"].startswith("domain_shift_"):
+            continue
+        primary = record["domain_shift"]["primary"]
+        direction = display[record["protocol"]["source"]]
+        for key, label in score_groups:
+            rows.extend(
+                {"Direction": direction, "Window role": label, "JSD score": score}
+                for score in primary[key]["scores"]
+            )
+    frame = pd.DataFrame(rows)
+    fig, ax = plt.subplots(figsize=(8.5, 4.8))
+    sns.boxplot(
+        data=frame,
+        x="JSD score",
+        y="Direction",
+        hue="Window role",
+        palette=PALETTE[:3],
+        showfliers=False,
+        ax=ax,
+    )
+    ax.set_xscale("log")
+    ax.set_xlabel("Mean marginal Jensen–Shannon divergence (log scale)")
+    ax.set_ylabel("")
+    ax.set_title("Target distributions are separated from source-audit windows")
+    ax.grid(axis="x", alpha=0.25)
+    ax.legend(fontsize=8, title="")
+    _save_figure(fig, "research_figure19_domain_shift_scores")
+
+
+def domain_validation_mixture_figure(table: pd.DataFrame):
+    display = {
+        ("nf_unsw_nb15_v2", "nf_ton_iot_v2"): "NF-UNSW → NF-ToN-IoT",
+        ("nf_ton_iot_v2", "nf_unsw_nb15_v2"): "NF-ToN-IoT → NF-UNSW",
+    }
+    method_labels = {
+        "jsd_mean": "Mean JSD (primary)",
+        "psi_mean": "Mean PSI",
+        "ks_mean": "Mean KS",
+    }
+    directions = list(table[["source", "target"]].drop_duplicates().itertuples(index=False, name=None))
+    fig, axes = plt.subplots(1, len(directions), figsize=(10.4, 4.2), sharey=True)
+    if len(directions) == 1:
+        axes = [axes]
+    for ax, direction in zip(axes, directions):
+        subset = table[(table["source"] == direction[0]) & (table["target"] == direction[1])]
+        for index, method in enumerate(("jsd_mean", "psi_mean", "ks_mean")):
+            points = subset[subset["method"] == method].sort_values("target_fraction")
+            ax.errorbar(
+                points["target_fraction"],
+                points["alarm_rate_mean"],
+                yerr=points["alarm_rate_std"],
+                marker="o",
+                capsize=3,
+                color=PALETTE[index],
+                label=method_labels[method],
+            )
+        ax.axhline(0.80, linestyle="--", color="0.35", linewidth=1, label="0.80 criterion")
+        ax.set_xlim(-0.02, 1.02)
+        ax.set_ylim(-0.03, 1.08)
+        ax.set_xticks([0, 0.25, 0.50, 0.75, 1.0])
+        ax.set_xlabel("Target traffic fraction in 512-flow window")
+        ax.set_title(display[direction])
+        ax.grid(alpha=0.25)
+    axes[0].set_ylabel("Window alarm rate")
+    axes[-1].legend(fontsize=8, loc="lower right")
+    fig.suptitle("JSD detects cross-testbed mixtures at lower target fractions", y=1.02)
+    _save_figure(fig, "research_figure20_domain_validation_mixtures")
+
+
+def domain_shift_window_sensitivity_figure(table: pd.DataFrame):
+    primary = table[table["method"] == "jsd_mean"].copy()
+    grouped = primary.groupby("window_size", as_index=False).agg(
+        source_far=("source_audit_false_alarm_rate_mean", "mean"),
+        source_far_std=("source_audit_false_alarm_rate_mean", "std"),
+        alarm_10=("target_10pct_alarm_rate_mean", "mean"),
+        alarm_10_std=("target_10pct_alarm_rate_mean", "std"),
+        alarm_25=("target_25pct_alarm_rate_mean", "mean"),
+    )
+    grouped = grouped.fillna(0.0).sort_values("window_size")
+    fig, axes = plt.subplots(1, 2, figsize=(10.4, 4.1), sharex=True)
+    axes[0].errorbar(
+        grouped["window_size"], grouped["source_far"],
+        yerr=grouped["source_far_std"], marker="o", capsize=3,
+        color=PALETTE[0], label="Source audit",
+    )
+    axes[0].axhline(0.10, linestyle="--", color="0.35", linewidth=1,
+                    label="Frozen FPR ceiling")
+    axes[0].set_ylabel("Source-window false-alarm rate")
+    axes[0].set_ylim(-0.02, 0.16)
+    axes[0].legend(fontsize=8)
+    axes[1].errorbar(
+        grouped["window_size"], grouped["alarm_10"],
+        yerr=grouped["alarm_10_std"], marker="o", capsize=3,
+        color=PALETTE[1], label="10% target mixture",
+    )
+    axes[1].plot(grouped["window_size"], grouped["alarm_25"], marker="s",
+                 color=PALETTE[2], label="25% target mixture")
+    axes[1].set_ylabel("Shift-alarm rate")
+    axes[1].set_ylim(-0.03, 1.08)
+    axes[1].legend(fontsize=8, loc="lower right")
+    for ax in axes:
+        ax.set_xscale("log", base=2)
+        ax.set_xticks([128, 256, 512, 1024])
+        ax.set_xticklabels(["128", "256", "512", "1,024"])
+        ax.set_xlabel("Flows per window")
+        ax.grid(alpha=0.25)
+    fig.suptitle("JSD batching trades detection delay for source stability", y=1.02)
+    _save_figure(fig, "research_figure27_domain_shift_window_sensitivity")
+
+
+def safe_resumption_figure(table: pd.DataFrame):
+    display = {
+        ("nf_unsw_nb15_v2", "nf_ton_iot_v2"): "NF-UNSW → NF-ToN-IoT",
+        ("nf_ton_iot_v2", "nf_unsw_nb15_v2"): "NF-ToN-IoT → NF-UNSW",
+    }
+    labels = {
+        "no_adaptation": "No adaptation",
+        "recalibration": "Recalibration",
+        "compact_retraining": "Compact retraining",
+    }
+    directions = list(table[["source", "target"]].drop_duplicates().itertuples(index=False, name=None))
+    fig, axes = plt.subplots(1, len(directions), figsize=(10.4, 4.2), sharey=True)
+    if len(directions) == 1:
+        axes = [axes]
+    for ax, direction in zip(axes, directions):
+        subset = table[(table["source"] == direction[0]) & (table["target"] == direction[1])]
+        for index, action in enumerate(labels):
+            points = subset[subset["action"] == action].sort_values("label_budget")
+            ax.errorbar(points["label_budget"], points["final_audit_macro_f1_mean"],
+                        yerr=points["final_audit_macro_f1_std"], marker="o", capsize=3,
+                        color=PALETTE[index], label=labels[action])
+        ax.axhline(0.80, linestyle="--", color="0.35", linewidth=1, label="Gate floor")
+        ax.set_xscale("symlog", linthresh=100)
+        ax.set_xticks([0, 100, 500, 2000])
+        ax.set_xticklabels(["0", "100", "500", "2,000"])
+        ax.set_ylim(0.0, 1.02)
+        ax.set_xlabel("Labeled target review budget")
+        ax.set_title(display[direction])
+        ax.grid(alpha=0.25)
+    axes[0].set_ylabel("Final-audit macro-F1")
+    axes[-1].legend(fontsize=8, loc="lower right")
+    fig.suptitle("Compact retraining restores target performance; recalibration does not", y=1.02)
+    _save_figure(fig, "research_figure21_safe_resumption")
+
+
+def safe_resumption_diagnosis_figure(table: pd.DataFrame):
+    grouped = (table.groupby("feature", as_index=False)["mean_jsd"].agg(["mean", "std"])
+               .reset_index().nlargest(12, "mean").sort_values("mean"))
+    fig, ax = plt.subplots(figsize=(7.2, 4.8))
+    ax.barh(grouped["feature"], grouped["mean"], xerr=grouped["std"].fillna(0),
+            color=PALETTE[2], alpha=0.85, capsize=3)
+    ax.set_xlabel("Mean per-feature JSD across reported top-feature appearances")
+    ax.set_ylabel("")
+    ax.set_title("Features contributing most to cross-testbed shift alarms")
+    ax.grid(axis="x", alpha=0.25)
+    _save_figure(fig, "research_figure22_shift_diagnosis")
+
+
+def prospective_resumption_figure(table: pd.DataFrame):
+    display = {
+        ("nf_unsw_nb15_v2", "nf_ton_iot_v2"): "NF-UNSW → NF-ToN-IoT",
+        ("nf_ton_iot_v2", "nf_unsw_nb15_v2"): "NF-ToN-IoT → NF-UNSW",
+    }
+    summary = (
+        table.groupby(["source", "target"], as_index=False)
+        .agg(
+            resumed=("decision", lambda values: (values == "SAFE_TO_RESUME").mean()),
+            audit_passed=("final_audit_passed", "mean"),
+            unsafe=("unsafe_resumption", "mean"),
+        )
+    )
+    fig, ax = plt.subplots(figsize=(7.2, 4.5))
+    x = np.arange(len(summary))
+    width = 0.24
+    ax.bar(x - width, summary["resumed"], width, label="Validation resumed", color=PALETTE[0])
+    ax.bar(x, summary["audit_passed"], width, label="Passed untouched audit", color=PALETTE[2])
+    ax.bar(x + width, summary["unsafe"], width, label="Unsafe resumption", color=PALETTE[3])
+    ax.set_xticks(x)
+    ax.set_xticklabels([display[(row.source, row.target)] for row in summary.itertuples()])
+    ax.set_ylim(0, 1.08)
+    ax.set_ylabel("Fraction of 10 prospective seeds")
+    ax.set_title("Wilson-bound validation gate leaves residual audit failures")
+    ax.legend(fontsize=8, loc="upper center", ncol=3)
+    ax.grid(axis="y", alpha=0.25)
+    _save_figure(fig, "research_figure23_prospective_resumption")
+
+
+def shadow_resumption_figure(table: pd.DataFrame):
+    display = {
+        ("nf_unsw_nb15_v2", "nf_ton_iot_v2"): "NF-UNSW → NF-ToN-IoT",
+        ("nf_ton_iot_v2", "nf_unsw_nb15_v2"): "NF-ToN-IoT → NF-UNSW",
+    }
+    directions = list(table[["source", "target"]].drop_duplicates().itertuples(index=False, name=None))
+    fig, axes = plt.subplots(1, 2, figsize=(10.2, 4.3), sharey=True)
+    labels = ["Resume coverage", "Audit-safe automation", "Unsafe resumption"]
+    for ax, direction in zip(axes, directions):
+        subset = table[(table["source"] == direction[0]) & (table["target"] == direction[1])]
+        single = [
+            (subset["single_stage_decision"] == "SAFE_TO_RESUME").mean(),
+            subset["single_stage_final_audit_passed"].mean(),
+            subset["single_stage_unsafe_resumption"].mean(),
+        ]
+        shadow = [
+            (subset["shadow_decision"] == "SAFE_TO_RESUME").mean(),
+            subset["shadow_final_audit_passed"].mean(),
+            subset["shadow_unsafe_resumption"].mean(),
+        ]
+        x = np.arange(len(labels))
+        ax.bar(x - 0.18, single, 0.36, label="Single-stage counterfactual", color=PALETTE[0])
+        ax.bar(x + 0.18, shadow, 0.36, label="Two-stage shadow gate", color=PALETTE[2])
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=18, ha="right")
+        ax.set_ylim(0, 1.08)
+        ax.set_title(display[direction])
+        ax.grid(axis="y", alpha=0.25)
+    axes[0].set_ylabel("Fraction of 10 prospective seeds")
+    axes[-1].legend(fontsize=8, loc="upper right")
+    fig.suptitle("Shadow validation trades resumption coverage for zero observed audit failures", y=1.02)
+    _save_figure(fig, "research_figure24_shadow_resumption")
+
+
+def review_label_noise_figure(table: pd.DataFrame):
+    summary = (
+        table.groupby("review_label_noise_rate", as_index=False)
+        .agg(
+            resume_coverage=("decision", lambda values: (values == "SAFE_TO_RESUME").mean()),
+            audit_safe_automation=("final_audit_passed", "mean"),
+            unsafe_resumption=("unsafe_resumption", "mean"),
+            audit_capable_action=("any_action_audit_passed", "mean"),
+        )
+    )
+    fig, ax = plt.subplots(figsize=(7.3, 4.7))
+    x = 100 * summary["review_label_noise_rate"]
+    for index, (column, label) in enumerate((
+        ("resume_coverage", "Resume coverage"),
+        ("audit_safe_automation", "Audit-safe automation"),
+        ("audit_capable_action", "Any audit-capable action (reporting only)"),
+        ("unsafe_resumption", "Unsafe resumption"),
+    )):
+        ax.plot(x, summary[column], marker="o", linewidth=2, color=PALETTE[index], label=label)
+    ax.set_xticks([0, 5, 10, 20])
+    ax.set_ylim(-0.03, 1.03)
+    ax.set_xlabel("Symmetric noise in labeled review pool (%)")
+    ax.set_ylabel("Fraction of 10 prospective runs")
+    ax.set_title("Review-label noise makes the shadow gate fail closed")
+    ax.legend(fontsize=8, loc="upper right")
+    ax.grid(alpha=0.25)
+    _save_figure(fig, "research_figure25_review_label_noise")
+
+
+def robust_review_label_noise_figure(table: pd.DataFrame):
+    summary = (
+        table.groupby("review_label_noise_rate", as_index=False)
+        .agg(
+            standard_coverage=("standard_decision", lambda values: (values == "SAFE_TO_RESUME").mean()),
+            enhanced_coverage=("enhanced_decision", lambda values: (values == "SAFE_TO_RESUME").mean()),
+            enhanced_audit_safe=("enhanced_final_audit_passed", "mean"),
+            enhanced_unsafe=("enhanced_unsafe_resumption", "mean"),
+        )
+    )
+    fig, ax = plt.subplots(figsize=(7.3, 4.7))
+    x = 100 * summary["review_label_noise_rate"]
+    series = (
+        ("standard_coverage", "Standard-tree policy coverage"),
+        ("enhanced_coverage", "Enhanced policy coverage"),
+        ("enhanced_audit_safe", "Enhanced audit-safe automation"),
+        ("enhanced_unsafe", "Enhanced unsafe resumption"),
+    )
+    for index, (column, label) in enumerate(series):
+        ax.plot(x, summary[column], marker="o", linewidth=2, color=PALETTE[index], label=label)
+    ax.set_xticks([0, 5, 10, 20])
+    ax.set_ylim(-0.03, 1.03)
+    ax.set_xlabel("Symmetric noise in labeled review pool (%)")
+    ax.set_ylabel("Fraction of 10 prospective runs")
+    ax.set_title("Structural regularization restores bounded availability under label noise")
+    ax.legend(fontsize=8, loc="upper right")
+    ax.grid(alpha=0.25)
+    _save_figure(fig, "research_figure26_robust_review_label_noise")
+
+
+def asymmetric_review_label_noise_figure(table: pd.DataFrame):
+    order = [
+        "benign→malicious 5%", "benign→malicious 10%",
+        "malicious→benign 5%", "malicious→benign 10%",
+    ]
+    summary = table.groupby("profile", as_index=False).agg(
+        resume_coverage=("decision", lambda values: (values == "SAFE_TO_RESUME").mean()),
+        audit_safe=("final_audit_passed", "mean"),
+        unsafe=("unsafe_resumption", "mean"),
+    ).set_index("profile").reindex(order).reset_index()
+    x = np.arange(len(summary))
+    width = 0.24
+    fig, ax = plt.subplots(figsize=(8.6, 4.7))
+    for offset, column, label, color in (
+        (-width, "resume_coverage", "Resume coverage", PALETTE[0]),
+        (0.0, "audit_safe", "Audit-safe automation", PALETTE[2]),
+        (width, "unsafe", "Unsafe resumption", PALETTE[3]),
+    ):
+        ax.bar(x + offset, summary[column], width=width, label=label, color=color)
+    ax.set_xticks(x)
+    ax.set_xticklabels([label.replace(" ", "\n", 1) for label in order])
+    ax.set_ylim(0.0, 1.05)
+    ax.set_ylabel("Fraction of 10 prospective runs")
+    ax.set_title("Missed-attack review errors create the greater resumption risk")
+    ax.legend(fontsize=8, loc="lower left")
+    ax.grid(axis="y", alpha=0.25)
+    _save_figure(fig, "research_figure28_asymmetric_review_label_noise")
+
+
 def representative_probability_figures(metadata: dict):
     feature_names = metadata["feature_columns"]
     partitions = load_random_partitions(
@@ -1022,6 +1818,34 @@ def main():
     if any(record["experiment_id"].startswith("cross_netflow_") for record in records):
         cross_netflow_transfer_figure(tables["research_cross_netflow_summary.csv"])
         cross_netflow_family_figure(tables["research_cross_netflow_family.csv"])
+    if any(record["experiment_id"].startswith("domain_shift_") for record in records):
+        domain_shift_rate_figure(tables["research_domain_shift_summary.csv"])
+        domain_shift_score_figure(records)
+    if any(record["experiment_id"].startswith("domain_validation_") for record in records):
+        domain_validation_mixture_figure(tables["research_domain_validation_mixtures.csv"])
+    if any(record["experiment_id"].startswith(
+        "domain_validation_window_sensitivity_"
+    ) for record in records):
+        domain_shift_window_sensitivity_figure(
+            tables["research_domain_shift_window_sensitivity.csv"]
+        )
+    if any(record["experiment_id"].startswith("safe_resumption_") for record in records):
+        safe_resumption_figure(tables["research_safe_resumption_actions.csv"])
+        safe_resumption_diagnosis_figure(tables["research_safe_resumption_diagnosis.csv"])
+    if any(record["experiment_id"].startswith("prospective_resumption_") for record in records):
+        prospective_resumption_figure(
+            tables["research_prospective_resumption_confirmation.csv"]
+        )
+    if any(record["experiment_id"].startswith("shadow_resumption_") for record in records):
+        shadow_resumption_figure(tables["research_shadow_resumption_confirmation.csv"])
+    if any(record["experiment_id"].startswith("label_noise_resumption_") for record in records):
+        review_label_noise_figure(tables["research_review_label_noise.csv"])
+    if any(record["experiment_id"].startswith("robust_noise_resumption_") for record in records):
+        robust_review_label_noise_figure(tables["research_robust_review_label_noise.csv"])
+    if any(record["experiment_id"].startswith("asymmetric_noise_resumption_") for record in records):
+        asymmetric_review_label_noise_figure(
+            tables["research_asymmetric_review_label_noise.csv"]
+        )
     representative_probability_figures(metadata)
     confusion_figure(records)
     feature_importance_figure(records)
@@ -1031,6 +1855,26 @@ def main():
         figure_count += 2
     if any(record["experiment_id"].startswith("cross_netflow_") for record in records):
         figure_count += 2
+    if any(record["experiment_id"].startswith("domain_shift_") for record in records):
+        figure_count += 2
+    if any(record["experiment_id"].startswith("domain_validation_") for record in records):
+        figure_count += 1
+    if any(record["experiment_id"].startswith(
+        "domain_validation_window_sensitivity_"
+    ) for record in records):
+        figure_count += 1
+    if any(record["experiment_id"].startswith("safe_resumption_") for record in records):
+        figure_count += 2
+    if any(record["experiment_id"].startswith("prospective_resumption_") for record in records):
+        figure_count += 1
+    if any(record["experiment_id"].startswith("shadow_resumption_") for record in records):
+        figure_count += 1
+    if any(record["experiment_id"].startswith("label_noise_resumption_") for record in records):
+        figure_count += 1
+    if any(record["experiment_id"].startswith("robust_noise_resumption_") for record in records):
+        figure_count += 1
+    if any(record["experiment_id"].startswith("asymmetric_noise_resumption_") for record in records):
+        figure_count += 1
     print(f"Generated {len(tables)} tables and {figure_count} figures from {len(records)} result records.")
 
 

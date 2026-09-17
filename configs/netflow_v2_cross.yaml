@@ -31,6 +31,25 @@ uncertainty_alpha: 0.10
 uncertainty_target_coverage: 0.90
 feature_transform: signed_log1p
 
+# Frozen source-only deployment-sentinel protocol. The target may be scored after
+# this configuration is fixed, but target labels must not fit bins, thresholds, or
+# select any parameter.
+domain_shift_sentinel:
+  model: hist_gradient_boosting
+  window_size: 512
+  quantile_bins: 10
+  calibration_alpha: 0.05
+  maximum_reference_rows: 100000
+  minimum_calibration_windows: 10
+  maximum_source_audit_false_alarm_rate: 0.10
+  minimum_mixed_target_detection_rate: 0.80
+  minimum_benign_target_detection_rate: 0.80
+  target_cap_strategy: label_blind_random
+  ablations:
+    - {name: coarse_5_bin_mean, quantile_bins: 5, aggregation: mean}
+    - {name: robust_10_bin_median, quantile_bins: 10, aggregation: median}
+    - {name: fine_20_bin_mean, quantile_bins: 20, aggregation: mean}
+
 # Conservative exclusions are resolved case-insensitively after inspecting the archive.
 exclude_name_patterns:
   - IPV4_SRC_ADDR

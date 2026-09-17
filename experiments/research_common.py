@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -159,23 +160,64 @@ def hardware_metadata() -> dict:
     }
 
 
-def save_result(result: dict, output_dir: Path) -> Path:
-    validate_result(result)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    result_path = output_dir / f"{result['experiment_id']}.json"
-    result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
-    master_path = output_dir / "master_results.jsonl"
+def atomic_write_text(path: Path, content: str) -> None:
+    """Replace one file only after a complete, flushed same-directory write.
+
+    An interrupted replacement preserves the previous destination. This is not a
+    multi-writer transaction or a guarantee against storage-device failure.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="\n", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
+def rebuild_results_ledger(output_dir: Path) -> int:
+    """Validate all authoritative per-run JSONs before atomically rebuilding the index."""
     records = []
+    seen = set()
     for path in sorted(output_dir.glob("*.json")):
         if path.name.startswith("summary_"):
             continue
         candidate = json.loads(path.read_text(encoding="utf-8"))
         validate_result(candidate)
+        identifier = candidate["experiment_id"]
+        if identifier != path.stem or identifier in seen:
+            raise ValueError(f"Duplicate or filename-mismatched experiment ID: {identifier}")
+        seen.add(identifier)
         records.append(candidate)
-    master_path.write_text(
+    if not records:
+        raise ValueError("Refusing to replace a ledger with an empty result collection")
+    atomic_write_text(
+        output_dir / "master_results.jsonl",
         "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records),
-        encoding="utf-8",
     )
+    return len(records)
+
+
+def save_result(result: dict, output_dir: Path) -> Path:
+    validate_result(result)
+    identifier = result["experiment_id"]
+    if not isinstance(identifier, str) or not identifier or any(
+        character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+        for character in identifier
+    ):
+        raise ValueError("Experiment ID must contain only letters, digits, underscores or hyphens")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result_path = output_dir / f"{identifier}.json"
+    atomic_write_text(result_path, json.dumps(result, indent=2))
+    rebuild_results_ledger(output_dir)
     return result_path
 
 

@@ -38,12 +38,21 @@ def canonicalize_archive(
     dataset_key: str,
     output_path: Path,
     exclude_name_patterns: list[str],
-    maximum_rows_per_class: int,
+    maximum_rows_per_class: int | None,
     chunk_rows: int,
+    sampling_mode: str = "per_class",
+    maximum_rows: int | None = None,
 ) -> dict:
-    """Keep globally smallest deterministic feature hashes within each class."""
+    """Keep deterministic feature-hash candidates under a documented sampling mode."""
+    if sampling_mode not in {"per_class", "global_label_blind"}:
+        raise ValueError("sampling_mode must be per_class or global_label_blind")
+    if sampling_mode == "per_class" and (maximum_rows_per_class is None or maximum_rows_per_class <= 0):
+        raise ValueError("per_class sampling requires maximum_rows_per_class")
+    if sampling_mode == "global_label_blind" and (maximum_rows is None or maximum_rows <= 0):
+        raise ValueError("global_label_blind sampling requires maximum_rows")
     excluded = {value.upper() for value in exclude_name_patterns}
     retained: dict[int, pd.DataFrame] = {0: pd.DataFrame(), 1: pd.DataFrame()}
+    retained_global = pd.DataFrame()
     scanned = invalid = chunk_duplicates = 0
     with ZipFile(archive_path) as archive:
         member = archive_csv_member(archive)
@@ -81,20 +90,34 @@ def canonicalize_archive(
                     subset=["feature_fingerprint", "binary_label"], keep="first"
                 )
                 chunk_duplicates += before - len(candidate)
-                for label in (0, 1):
-                    part = candidate[candidate["binary_label"] == label]
-                    if part.empty:
-                        continue
-                    combined = pd.concat([retained[label], part], ignore_index=True)
-                    combined = combined.drop_duplicates(
-                        subset=["feature_fingerprint"], keep="first"
+                if sampling_mode == "per_class":
+                    for label in (0, 1):
+                        part = candidate[candidate["binary_label"] == label]
+                        if part.empty:
+                            continue
+                        combined = pd.concat([retained[label], part], ignore_index=True)
+                        combined = combined.drop_duplicates(
+                            subset=["feature_fingerprint"], keep="first"
+                        )
+                        retained[label] = combined.nsmallest(
+                            int(maximum_rows_per_class), "sample_priority", keep="first"
+                        ).reset_index(drop=True)
+                else:
+                    retained_global = pd.concat(
+                        [retained_global, candidate], ignore_index=True
+                    ).drop_duplicates(
+                        subset=["feature_fingerprint", "binary_label"], keep="first"
                     )
-                    retained[label] = combined.nsmallest(
-                        maximum_rows_per_class, "sample_priority", keep="first"
+                    retained_global = retained_global.nsmallest(
+                        int(maximum_rows), "sample_priority", keep="first"
                     ).reset_index(drop=True)
     if feature_columns is None:
         raise ValueError("archive contained no data rows")
-    canonical = pd.concat(retained.values(), ignore_index=True)
+    canonical = (
+        pd.concat(retained.values(), ignore_index=True)
+        if sampling_mode == "per_class"
+        else retained_global
+    )
     contradictory = canonical.groupby("feature_fingerprint")["binary_label"].nunique()
     contradictory_hashes = set(contradictory[contradictory > 1].index.tolist())
     contradictory_rows = int(canonical["feature_fingerprint"].isin(contradictory_hashes).sum())
@@ -124,8 +147,16 @@ def canonicalize_archive(
         "feature_columns": feature_columns,
         "feature_count": len(feature_columns),
         "excluded_columns": sorted(LABEL_COLUMNS | excluded),
-        "sampling": "globally smallest 64-bit feature hashes per binary class",
-        "maximum_rows_per_class": int(maximum_rows_per_class),
+        "sampling": (
+            "globally smallest 64-bit feature hashes per binary class"
+            if sampling_mode == "per_class"
+            else "globally smallest 64-bit feature hashes independent of labels"
+        ),
+        "sampling_mode": sampling_mode,
+        "maximum_rows_per_class": (
+            int(maximum_rows_per_class) if maximum_rows_per_class is not None else None
+        ),
+        "maximum_rows": int(maximum_rows) if maximum_rows is not None else None,
         "limitation": (
             "Contradiction and duplicate counts are exact within the bounded hash-priority "
             "candidate set, not a full-dataset duplicate census."
@@ -154,8 +185,10 @@ def prepare(config: dict, force: bool = False) -> dict:
             key,
             output_dir / f"{key}.parquet",
             config["exclude_name_patterns"],
-            int(config["maximum_rows_per_class"]),
+            config.get("maximum_rows_per_class"),
             int(config["chunk_rows"]),
+            sampling_mode=config.get("sampling_mode", "per_class"),
+            maximum_rows=config.get("maximum_rows"),
         )
         metadata["datasets"][key]["published_rows"] = int(record["published_rows"])
         metadata["datasets"][key]["source_uuid"] = record["uuid"]

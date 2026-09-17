@@ -78,6 +78,36 @@ protocol, seed, model, feature set, metrics, efficiency, durations, and hardware
 # Frozen bidirectional standardized NetFlow-v2 transfer
 .\.venv\Scripts\python.exe -m experiments.run_cross_netflow_grid `
   --config configs/netflow_v2_cross.yaml
+
+# Source-only domain-shift sentinel, both directions and five seeds
+.\.venv\Scripts\python.exe -m experiments.run_domain_shift_grid `
+  --config configs/netflow_v2_cross.yaml
+
+# Independent label-blind cap, JSD/PSI/KS mixture validation, both directions and five seeds
+.\.venv\Scripts\python.exe -m src.data.prepare_netflow_v2 `
+  --config configs/netflow_v2_label_blind.yaml --force
+.\.venv\Scripts\python.exe -m experiments.run_domain_shift_validation_grid `
+  --config configs/netflow_v2_label_blind.yaml
+
+# Resource-bounded recovery and validation-gated resumption
+.\.venv\Scripts\python.exe -m experiments.run_safe_resumption_grid `
+  --config configs/safe_resumption.yaml
+
+# Prospective Wilson-gate confirmation on unused seeds 5--14
+.\.venv\Scripts\python.exe -m experiments.run_safe_resumption_grid `
+  --config configs/prospective_resumption.yaml
+
+# Prospective two-stage shadow-validation gate on unused seeds 15--24
+.\.venv\Scripts\python.exe -m experiments.run_safe_resumption_grid `
+  --config configs/shadow_resumption.yaml
+
+# Two-stage recovery under 0%, 5%, 10%, and 20% review-label noise
+.\.venv\Scripts\python.exe -m experiments.run_label_noise_resumption_grid `
+  --config configs/label_noise_resumption.yaml
+
+# Prespecified regularized compact tree under the same noise levels
+.\.venv\Scripts\python.exe -m experiments.run_label_noise_resumption_grid `
+  --config configs/robust_label_noise_resumption.yaml
 ```
 
 Use `--force` only when intentionally replacing an existing result with a rerun under
@@ -90,8 +120,24 @@ validated individual JSON records.
 .\.venv\Scripts\python.exe -m experiments.make_research_outputs
 ```
 
-This produces 16 CSV tables and 17 figures in PDF, SVG, and PNG. PDF/SVG are intended
-for the IEEE paper; PNGs are previews. All values are derived from saved JSON results.
+This produces 30 CSV tables and 28 figures in PDF, SVG, and PNG. PDF/SVG are intended
+for the IEEE paper; PNGs are previews. To repair an interrupted ledger update without
+retraining, run `python -m experiments.rebuild_results_ledger` in the project environment.
+Keep experiment writers sequential; file replacement is atomic, not a multi-file transaction.
+
+All values are derived from saved JSON results.
+
+Run the frozen sentinel batching study with:
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.run_domain_shift_window_grid
+```
+
+Run the frozen class-conditional review-noise study with:
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.run_asymmetric_noise_resumption_grid
+```
 
 ## 6. Quality gates
 
@@ -153,6 +199,10 @@ obtain advisor approval.
 - Do not treat a shared NetFlow schema as evidence of transfer. The target labels in the
   cross-testbed protocol are evaluation-only, source conformal coverage does not carry
   over, and the measured target malicious recall is below 0.017 for every tested cell.
+- Treat `DOMAIN_SHIFT_DETECTED` as a batch-level deployment interlock, not a malicious
+  flow label. Bins and thresholds use source data only; the benign-only target analysis
+  is retrospective. Because all target windows alarmed, claim mismatch detection rather
+  than continuous target IDS service or repaired attack classification.
 - Interpret paired bootstrap intervals with exact sign-flip tests. With five seed pairs,
   the smallest possible two-sided sign-flip p-value is 0.0625; seeds are not independent
   network deployments.

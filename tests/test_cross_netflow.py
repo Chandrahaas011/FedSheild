@@ -4,7 +4,11 @@ import pandas as pd
 
 import numpy as np
 
-from experiments.run_cross_netflow import load_cross_partitions, signed_log1p
+from experiments.run_cross_netflow import (
+    _cap_label_blind,
+    load_cross_partitions,
+    signed_log1p,
+)
 
 
 def test_cross_partitions_remove_overlap_and_keep_target_out_of_development(tmp_path: Path):
@@ -40,3 +44,17 @@ def test_signed_log_transform_makes_large_values_float32_safe():
     assert transformed.dtype == np.float32
     assert np.isfinite(transformed).all()
     assert transformed[0, 0] < 0 < transformed[0, 2]
+
+
+def test_label_blind_target_cap_does_not_change_when_labels_change():
+    frame = pd.DataFrame(
+        {
+            "feature_fingerprint": np.arange(100),
+            "binary_label": np.array([0, 1] * 50),
+        }
+    )
+    relabelled = frame.copy()
+    relabelled["binary_label"] = 1 - relabelled["binary_label"]
+    first = _cap_label_blind(frame, 30, seed=9)
+    second = _cap_label_blind(relabelled, 30, seed=9)
+    assert first["feature_fingerprint"].tolist() == second["feature_fingerprint"].tolist()

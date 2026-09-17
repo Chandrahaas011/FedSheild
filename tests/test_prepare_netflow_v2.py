@@ -36,3 +36,32 @@ def test_netflow_builder_excludes_identifiers_and_removes_candidate_contradictio
     assert metadata["canonical_rows"] == 3
     assert metadata["feature_columns"] == ["F1", "F2"]
     assert "IPV4_SRC_ADDR" not in canonical.columns
+
+
+def test_netflow_label_blind_sampling_does_not_balance_classes(tmp_path: Path):
+    frame = pd.DataFrame(
+        {
+            "F1": list(range(20)),
+            "F2": list(range(20, 40)),
+            "Label": [0] * 18 + [1] * 2,
+            "Attack": ["Benign"] * 18 + ["Attack"] * 2,
+        }
+    )
+    csv_path = tmp_path / "flows.csv"
+    frame.to_csv(csv_path, index=False)
+    archive_path = tmp_path / "flows.zip"
+    with ZipFile(archive_path, "w") as archive:
+        archive.write(csv_path, "data/flows.csv")
+    metadata = canonicalize_archive(
+        archive_path,
+        "tiny",
+        tmp_path / "canonical.parquet",
+        [],
+        maximum_rows_per_class=None,
+        maximum_rows=10,
+        sampling_mode="global_label_blind",
+        chunk_rows=100,
+    )
+    assert metadata["sampling_mode"] == "global_label_blind"
+    assert metadata["canonical_rows"] == 10
+    assert metadata["maximum_rows_per_class"] is None

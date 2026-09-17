@@ -43,6 +43,15 @@ def _cap(frame: pd.DataFrame, maximum: int | None, seed: int) -> pd.DataFrame:
     return frame.iloc[np.sort(selected)].reset_index(drop=True)
 
 
+def _cap_label_blind(frame: pd.DataFrame, maximum: int | None, seed: int) -> pd.DataFrame:
+    """Cap rows deterministically without consulting target labels."""
+    if maximum is None or len(frame) <= maximum:
+        return frame.reset_index(drop=True)
+    rng = np.random.default_rng(seed)
+    selected = np.sort(rng.choice(len(frame), int(maximum), replace=False))
+    return frame.iloc[selected].reset_index(drop=True)
+
+
 def load_cross_partitions(config: dict, source: str, target: str, seed: int):
     if source == target or source not in DATASET_KEYS or target not in DATASET_KEYS:
         raise ValueError("source and target must be different supported datasets")
@@ -70,7 +79,15 @@ def load_cross_partitions(config: dict, source: str, target: str, seed: int):
         config.get("maximum_validation_rows"),
         seed + 4221,
     )
-    test = _cap(target_frame, config.get("maximum_target_test_rows"), seed + 4231)
+    target_cap_strategy = config.get("target_cap_strategy", "stratified_label")
+    if target_cap_strategy == "stratified_label":
+        test = _cap(target_frame, config.get("maximum_target_test_rows"), seed + 4231)
+    elif target_cap_strategy == "label_blind_random":
+        test = _cap_label_blind(
+            target_frame, config.get("maximum_target_test_rows"), seed + 4231
+        )
+    else:
+        raise ValueError(f"unsupported target_cap_strategy: {target_cap_strategy}")
     return {"train": train, "validation": validation, "test": test}, overlap_removed
 
 

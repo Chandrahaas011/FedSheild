@@ -1,0 +1,49 @@
+project: cross_dataset_netflow_v2_label_blind_validation
+dataset_version: NetFlow-v2-label-blind-v1
+source_records:
+  nf_unsw_nb15_v2:
+    uuid: 8c6e2a00-ef9c-11ed-827d-e762de186848
+    published_rows: 2390275
+    archive_path: data/raw/netflow_v2/nf_unsw_nb15_v2.zip
+  nf_ton_iot_v2:
+    uuid: a4ad7080-ef9c-11ed-a964-b70596e96ad5
+    published_rows: 16940496
+    archive_path: data/raw/netflow_v2/nf_ton_iot_v2.zip
+
+# This directory is deliberately independent of the historical per-class-capped data.
+processed_dir: data/processed/netflow_v2_label_blind
+metadata_path: data/processed/netflow_v2_label_blind/metadata.json
+output_dir: results/metrics
+artifact_dir: models/artifacts
+seeds: [0, 1, 2, 3, 4]
+sampling_mode: global_label_blind
+maximum_rows: 200000
+maximum_train_rows: 140000
+maximum_validation_rows: 60000
+maximum_target_test_rows: 200000
+chunk_rows: 250000
+feature_transform: signed_log1p
+
+domain_shift_validation:
+  window_size: 512
+  quantile_bins: 10
+  calibration_alpha: 0.05
+  maximum_reference_rows: 100000
+  maximum_ks_reference_rows: 4096
+  minimum_calibration_windows: 10
+  mixture_fractions: [0.0, 0.10, 0.25, 0.50, 0.75, 1.0]
+  # NF-UNSW's label-blind validation mixture role supplies 15 complete windows;
+  # twelve leaves a fixed safety margin without using calibration or audit rows.
+  mixture_windows_per_fraction: 12
+  maximum_source_audit_false_alarm_rate: 0.10
+  primary_method: jsd_mean
+  comparison_methods: [jsd_mean, psi_mean, ks_mean]
+
+exclude_name_patterns:
+  - IPV4_SRC_ADDR
+  - IPV4_DST_ADDR
+  - L4_SRC_PORT
+  - L4_DST_PORT
+  - FLOW_ID
+  - TIMESTAMP
+  - DNS_QUERY_ID
