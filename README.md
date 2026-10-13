@@ -3,11 +3,35 @@
 Leakage-aware, resource-controlled research on lightweight intrusion detection with
 explicit uncertainty handling under campaign and unseen-attack shift.
 
-The repository now contains two related systems:
+## Local React + Tailwind demonstration
 
-1. the primary classical-ML research pipeline described in the current paper; and
-2. the preserved legacy FedShield federated-learning simulator, retained for provenance
-   but not used to support the paper's empirical claims.
+
+The frontend is isolated in `ui/`: actual saved-model replay, raw-feature CSV
+inference, domain diagnostics, read-only recovery evidence, and an experiment/figure
+library. It does not capture or block traffic or activate deployed recovered models.
+The supplied bioluminescent fluid background uses the teal/ink palette. A persistent
+topbar light/dark control smoothly transitions the interface and fluid colors.
+Reduced motion and WebGL initialization failures use a static fallback. Run
+`npm test` inside `ui/` for theme-helper checks.
+Light mode is the default unless you explicitly save a dark preference. Select
+**Motion: on** in the topbar to enable the fluid even when reduced motion is
+requested; System respects that accessibility setting, while Off stops animation.
+The home page separately links to a presenter-paced start-to-finish demonstration
+that trains candidates in memory, validates them, locks a decision, then reveals
+untouched audit. It does not overwrite saved results or source artifacts. Local
+compute checks took about 3.6 seconds per direction; allow 8–12 minutes to explain.
+
+Build with `npm ci` and `npm run build` inside `ui/`. From the repository root,
+run `.\.venv\Scripts\python.exe -m src.demo.server` and open http://127.0.0.1:8765.
+Existing local datasets/artifacts are required; a fresh Git clone does not include
+them. The saved demo guards remain historical 512-flow artifacts, not the later
+256-flow sensitivity protocol. No console output modifies the research ledger.
+
+
+The repository contains two related systems:
+
+1. the primary classical-ML research pipeline for shift-aware IoT intrusion detection; and
+2. the preserved legacy FedShield federated-learning simulator, retained for provenance.
 
 ## Main finding
 
@@ -226,26 +250,8 @@ Run quality gates:
   fixed-budget recovery comparison that also reports unsafe resumption and source-domain
   forgetting rather than assuming that adaptation restores trustworthy operation.
 
-## Research documents
+## Reproducibility & Architecture
 
-- [Project audit](docs/PROJECT_AUDIT.md)
-- [Transformation log](docs/RESEARCH_TRANSFORMATION.md)
-- [Fourteen-week progress report](docs/PROGRESS_REPORT.md)
-- [Literature and novelty review](docs/LITERATURE_REVIEW.md)
-- [IEEE-style paper draft](paper/main.md)
-- [IEEEtran source](paper/main.tex)
-- [Self-contained Overleaf source](paper/overleaf_main.tex)
-- [Copy-paste LaTeX code in Markdown](paper/OVERLEAF_LATEX_CODE.md)
-- [Overleaf compilation instructions](paper/OVERLEAF_INSTRUCTIONS.md)
-- [Verified BibTeX](paper/references.bib)
-- [Presentation questions and answers](PRESENTATION_QA.md)
-
-Publication is not guaranteed. The repository provides a defensible draft and
-reproducible evidence; author details, venue fit, page limits, and advisor review remain
-the student's responsibility.
-
-For the fastest paper handoff, copy the fenced source from
-`paper/OVERLEAF_LATEX_CODE.md` into a blank Overleaf project's `main.tex`. It contains
-four author placeholders and an inline bibliography, and it compiles without uploaded
-figures by rendering labeled fallback boxes. An automated test prevents this Markdown
-copy and the canonical `paper/overleaf_main.tex` source from diverging.
+The codebase separates feature extraction, data preparation, lightweight model training,
+calibration, drift detection, and interactive demonstration into distinct, modular components.
+All reported baseline metrics and tables can be reproduced deterministically via the experiments runner.
